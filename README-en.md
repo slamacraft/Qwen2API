@@ -32,6 +32,145 @@ Qwen-Proxy is a proxy service that converts `https://chat.qwen.ai` and `Qwen Cod
 - Provides web management interface for easy configuration and monitoring
 - Batch account addition supports real-time progress display, adjustable login concurrency in system settings
 
+### ⚡ One-command deploy and service management (Bun source, recommended)
+
+This project is **Bun-first**: the repository only ships `bun.lock` (one at the root and one in `public/`), and both `packageManager` and `engines` require `bun >= 1.3.14`. npm/pnpm resolve dependencies on the fly and drift away from the lockfile, so **running from source with Bun is recommended** (it is also the run mode in which the browser session renews automatically; the standalone binary ships without the harvest script — see "Standalone executable").
+
+**Prerequisites**
+
+- Linux (x64 / arm64) or macOS with access to `chat.qwen.ai`
+- [Bun](https://bun.sh) `>= 1.3.14`
+- Chromium / Chrome: **strongly recommended**. Login-state renewal has to happen inside a headless browser; without it the upstream starts rejecting requests once the access token expires after 15 minutes
+
+```bash
+sudo apt install -y chromium            # Debian/Ubuntu
+# the script auto-detects /usr/bin/chromium and google-chrome; if it cannot find them, set CHROME_PATH=/usr/bin/chromium in .env
+```
+
+**Deploy / update script (safe to re-run)**
+
+Save it as `deploy.sh` and run it as **root** (`sudo bash deploy.sh`): the first run clones and initializes, later runs are just “update + restart”. At the end the script hands directory ownership to the service user configured in systemd.
+
+```bash
+#!/usr/bin/env bash
+# qwen2api deploy and update script: used for both the first deployment and later updates, safe to re-run.
+# run it as root: sudo bash deploy.sh
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/qwen2api}"      # deployment directory
+REPO="${REPO:-https://github.com/Rfym21/Qwen2API.git}"
+SERVICE="${SERVICE:-qwen2api}"           # systemd service name
+RUN_USER="${RUN_USER:-qwen2api}"         # service run user (chown is skipped if it does not exist)
+
+# 1) Bun (install only if missing; as root it goes to /root/.bun and is used for the build)
+if ! command -v bun >/dev/null 2>&1; then
+  curl -fsSL https://bun.sh/install | bash
+  export PATH="$HOME/.bun/bin:$PATH"
+fi
+bun --version
+
+# 2) Code: clone on the first run, fast-forward pull afterwards
+if [ -d "$APP_DIR/.git" ]; then
+  git -C "$APP_DIR" pull --ff-only
+else
+  mkdir -p "$APP_DIR"
+  git clone --depth 1 "$REPO" "$APP_DIR"
+fi
+cd "$APP_DIR"
+
+# 3) Dependencies + frontend (lockfile-based, reproducible; --production skips eslint and other dev dependencies)
+bun install --frozen-lockfile --production
+bun install --cwd public --frozen-lockfile
+bun run build:frontend
+
+# 4) Config: generated only on the first run, an existing .env is never overwritten
+[ -f .env ] || cp .env.example .env
+
+# 5) Hand ownership to the service user (skipped if that user does not exist)
+if id -u "$RUN_USER" >/dev/null 2>&1; then
+  chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
+fi
+
+# 6) Restart the systemd service if it is installed, otherwise print the foreground command
+if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
+  systemctl restart "$SERVICE"
+  systemctl --no-pager --lines=10 status "$SERVICE" || true
+else
+  echo "首次部署：编辑 $APP_DIR/.env（至少填 API_KEY 和账号），然后启动："
+  echo "  cd $APP_DIR && bun run start"
+fi
+```
+
+**systemd service (start on boot + restart on crash)**
+
+```bash
+# one-time preparation: dedicated user + deployment directory + Bun under that user (used by ExecStart)
+sudo useradd --system --create-home --home-dir /home/qwen2api --shell /usr/sbin/nologin qwen2api
+sudo mkdir -p /opt/qwen2api
+sudo -u qwen2api -H bash -c 'curl -fsSL https://bun.sh/install | bash'
+```
+
+```ini
+# /etc/systemd/system/qwen2api.service
+[Unit]
+Description=Qwen2API (Bun)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qwen2api
+WorkingDirectory=/opt/qwen2api
+Environment=PATH=/home/qwen2api/.bun/bin:/usr/local/bin:/usr/bin:/bin
+# the collection script auto-detects /usr/bin/chromium or google-chrome; set the path explicitly only if it cannot find them:
+# Environment=CHROME_PATH=/usr/bin/chromium
+ExecStart=/home/qwen2api/.bun/bin/bun --no-env-file src/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+# account stats/rate limits/session reuse are process-local state: a single instance only, do not run several
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now qwen2api
+curl -s http://127.0.0.1:3000/api/health        # HTTP 200 means it started successfully
+```
+
+**Update**
+
+```bash
+cd /opt/qwen2api
+git pull --ff-only                              # or simply run deploy.sh again
+bun install --frozen-lockfile --production
+bun install --cwd public --frozen-lockfile
+bun run build:frontend
+sudo systemctl restart qwen2api
+```
+
+**Stop / restart / logs**
+
+```bash
+sudo systemctl stop qwen2api                    # stop
+sudo systemctl restart qwen2api                 # restart
+sudo systemctl status qwen2api                  # status
+sudo journalctl -u qwen2api -f                  # live logs (Ctrl+C to exit)
+sudo journalctl -u qwen2api --since '10 min ago' # last 10 minutes
+```
+
+When running in the foreground, stop it with `Ctrl+C`; to keep it in the background without systemd, use `nohup bun run start > qwen2api.log 2>&1 &` and stop it with `kill <PID>`.
+
+**Data and backups**
+
+- `data/`: accounts, browser session fingerprints (`browser-profile.<email>.json`), statistics — **must be backed up**
+- `.env`: keys and configuration
+- `public/dist/`: frontend build output, can be rebuilt at any time
+
+To change the port, set `SERVICE_PORT` in `.env` (default 3000); before deploying multiple replicas you must first solve process-local state sharing, otherwise statistics and rate limits are counted per process.
+
 ### 🌐 Per-Account Proxy
 
 Each account can be configured with its own outbound proxy, allowing multiple accounts to use different IPs simultaneously, avoiding IP-based association bans from `chat.qwen.ai`.
@@ -233,25 +372,18 @@ docker compose pull && docker compose up -d
 
 ### 📦 Local Deployment
 
-```bash
-# Clone project
-git clone https://github.com/Rfym21/Qwen2API.git
-cd Qwen2API
+The recommended path is the script from the ⚡ One-command deploy and service management (Bun source, recommended) section above: it is safe to re-run, and the first deployment and later updates are the same command.
 
-# Install dependencies
+Minimal manual steps:
+
+```bash
+git clone https://github.com/Rfym21/Qwen2API.git && cd Qwen2API
 bun install --frozen-lockfile
 bun install --cwd public --frozen-lockfile
 bun run build:frontend
-
-# Configure environment variables
-cp .env.example .env
-# Edit .env file
-
-# Start one Bun process
-bun run start
-
-# Development mode
-bun run dev
+cp .env.example .env          # at minimum set API_KEY and accounts
+bun run start                 # = bun --no-env-file src/server.js
+bun run dev                   # development mode (--watch)
 ```
 
 ### Runtime and validation

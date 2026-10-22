@@ -32,6 +32,145 @@ Qwen-Proxy 是一个将 `https://chat.qwen.ai` 和 `Qwen Code / Qwen Cli` 转换
 - 提供 Web 管理界面，方便配置和监控
 - 批量添加账号支持实时进度展示，可在系统设置中调整登录并发数
 
+### ⚡ 一键部署与服务管理（Bun 源码，推荐）
+
+本项目是 **Bun 优先**的：仓库里只有 `bun.lock`（根目录和 `public/` 各一份），`packageManager` 与 `engines` 都要求 `bun >= 1.3.14`。用 npm/pnpm 会现解依赖、和锁文件漂移，所以**推荐 Bun 源码运行**（也是能让浏览器会话自动续期的运行方式；编译版二进制里没有采集脚本，续期方式见「独立二进制」一节）。
+
+**前置条件**
+
+- Linux（x64 / arm64）或 macOS，能访问 `chat.qwen.ai`
+- [Bun](https://bun.sh) `>= 1.3.14`
+- Chromium / Chrome：**强烈建议装**。登录态续期要在无头浏览器里完成，没装的话 access token 15 分钟过期后上游会开始拒绝请求
+
+```bash
+sudo apt install -y chromium            # Debian/Ubuntu
+# 脚本会自动找 /usr/bin/chromium、google-chrome；找不到时在 .env 里写 CHROME_PATH=/usr/bin/chromium
+```
+
+**部署 / 更新脚本（可重复执行）**
+
+保存为 `deploy.sh` 后用 **root** 执行（`sudo bash deploy.sh`）：首次会 clone 并初始化，之后再执行就是「更新 + 重启」。脚本最后会把目录属主交给 systemd 里配置的服务用户。
+
+```bash
+#!/usr/bin/env bash
+# qwen2api 部署与更新脚本：首次部署和后续更新都用它，可重复执行。
+# 用 root 执行：sudo bash deploy.sh
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/qwen2api}"      # 部署目录
+REPO="${REPO:-https://github.com/Rfym21/Qwen2API.git}"
+SERVICE="${SERVICE:-qwen2api}"           # systemd 服务名
+RUN_USER="${RUN_USER:-qwen2api}"         # 服务运行用户（不存在就跳过 chown）
+
+# 1) Bun（没装才装；root 装到 /root/.bun，供构建用）
+if ! command -v bun >/dev/null 2>&1; then
+  curl -fsSL https://bun.sh/install | bash
+  export PATH="$HOME/.bun/bin:$PATH"
+fi
+bun --version
+
+# 2) 代码：首次 clone，之后快进拉取
+if [ -d "$APP_DIR/.git" ]; then
+  git -C "$APP_DIR" pull --ff-only
+else
+  mkdir -p "$APP_DIR"
+  git clone --depth 1 "$REPO" "$APP_DIR"
+fi
+cd "$APP_DIR"
+
+# 3) 依赖 + 前端（按 lockfile，版本可复现；--production 跳过 eslint 等开发依赖）
+bun install --frozen-lockfile --production
+bun install --cwd public --frozen-lockfile
+bun run build:frontend
+
+# 4) 配置：只在第一次生成，不会覆盖已有 .env
+[ -f .env ] || cp .env.example .env
+
+# 5) 属主交给服务用户（没有该用户就跳过）
+if id -u "$RUN_USER" >/dev/null 2>&1; then
+  chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
+fi
+
+# 6) 已装 systemd 服务就重启，否则提示前台启动
+if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
+  systemctl restart "$SERVICE"
+  systemctl --no-pager --lines=10 status "$SERVICE" || true
+else
+  echo "首次部署：编辑 $APP_DIR/.env（至少填 API_KEY 和账号），然后启动："
+  echo "  cd $APP_DIR && bun run start"
+fi
+```
+
+**systemd 服务（开机自启 + 崩溃自动拉起）**
+
+```bash
+# 一次性准备：专用用户 + 部署目录 + 该用户下的 Bun（供 ExecStart 使用）
+sudo useradd --system --create-home --home-dir /home/qwen2api --shell /usr/sbin/nologin qwen2api
+sudo mkdir -p /opt/qwen2api
+sudo -u qwen2api -H bash -c 'curl -fsSL https://bun.sh/install | bash'
+```
+
+```ini
+# /etc/systemd/system/qwen2api.service
+[Unit]
+Description=Qwen2API (Bun)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qwen2api
+WorkingDirectory=/opt/qwen2api
+Environment=PATH=/home/qwen2api/.bun/bin:/usr/local/bin:/usr/bin:/bin
+# 采集脚本会自动找 /usr/bin/chromium 或 google-chrome；找不到时再显式指定：
+# Environment=CHROME_PATH=/usr/bin/chromium
+ExecStart=/home/qwen2api/.bun/bin/bun --no-env-file src/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+# 账号统计/限流/会话复用都是进程内状态：必须单实例，不要开多份
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now qwen2api
+curl -s http://127.0.0.1:3000/api/health        # 返回 200 即启动成功
+```
+
+**更新**
+
+```bash
+cd /opt/qwen2api
+git pull --ff-only                              # 或直接再跑一次 deploy.sh
+bun install --frozen-lockfile --production
+bun install --cwd public --frozen-lockfile
+bun run build:frontend
+sudo systemctl restart qwen2api
+```
+
+**停止 / 重启 / 看日志**
+
+```bash
+sudo systemctl stop qwen2api                    # 停止
+sudo systemctl restart qwen2api                 # 重启
+sudo systemctl status qwen2api                  # 状态
+sudo journalctl -u qwen2api -f                  # 实时日志（Ctrl+C 退出）
+sudo journalctl -u qwen2api --since '10 min ago' # 最近 10 分钟
+```
+
+前台运行时直接 `Ctrl+C` 停止；想放后台又不想装 systemd，可用 `nohup bun run start > qwen2api.log 2>&1 &`，停止用 `kill <PID>`。
+
+**数据与备份**
+
+- `data/`：账号、浏览器会话指纹（`browser-profile.<邮箱>.json`）、统计 —— **必须备份**
+- `.env`：密钥与配置
+- `public/dist/`：前端构建产物，可随时重建
+
+改端口写 `.env` 的 `SERVICE_PORT`（默认 3000）；多副本部署前要先解决进程内状态共享问题，否则统计/限流会各算各的。
+
 ### 🌐 账号级代理 / Per-account proxy
 
 每个账号可以配置自己专属的出站代理，从而让多个账号通过不同的 IP 同时使用，规避 `chat.qwen.ai` 基于 IP 的关联封禁。
@@ -241,25 +380,18 @@ docker compose pull && docker compose up -d
 
 ### 📦 本地部署
 
-```bash
-# 克隆项目
-git clone https://github.com/Rfym21/Qwen2API.git
-cd Qwen2API
+推荐直接用前文「⚡ 一键部署与服务管理（Bun 源码，推荐）」里的脚本：可重复执行，首次部署与后续更新都是同一条命令。
 
-# 安装依赖
+手动部署的最小步骤：
+
+```bash
+git clone https://github.com/Rfym21/Qwen2API.git && cd Qwen2API
 bun install --frozen-lockfile
 bun install --cwd public --frozen-lockfile
 bun run build:frontend
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件
-
-# Bun 单进程启动
-bun run start
-
-# 开发模式
-bun run dev
+cp .env.example .env          # 至少填 API_KEY 和账号
+bun run start                 # = bun --no-env-file src/server.js
+bun run dev                   # 开发模式（--watch）
 ```
 
 ### 运行与验证

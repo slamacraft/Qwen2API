@@ -52,6 +52,145 @@ PROXY_URL=http://127.0.0.1:8282  # Адрес ProxyFlow
 QWEN_CHAT_PROXY_URL=http://127.0.0.1:8000/qwen  # Адрес обратного прокси UrlProxy (UrlProxy настроен с HTTP_PROXY на ProxyFlow)
 ```
 
+### ⚡ Развёртывание одной командой и управление сервисом (исходники на Bun, рекомендуется)
+
+Проект **ориентирован в первую очередь на Bun**: в репозитории только `bun.lock` (один в корне и один в `public/`), а `packageManager` и `engines` требуют `bun >= 1.3.14`. npm/pnpm разрешают зависимости на лету и расходятся с lock-файлом, поэтому **рекомендуется запуск из исходников на Bun** (это ещё и режим, в котором сессия браузера продлевается автоматически; в отдельном исполняемом файле нет скрипта сбора — см. «Отдельный исполняемый файл»).
+
+**Требования**
+
+- Linux (x64 / arm64) или macOS с доступом к `chat.qwen.ai`
+- [Bun](https://bun.sh) `>= 1.3.14`
+- Chromium / Chrome: **настоятельно рекомендуется**. Продление состояния входа выполняется в headless-браузере; без него upstream начнёт отклонять запросы после того, как access token истечёт через 15 минут
+
+```bash
+sudo apt install -y chromium            # Debian/Ubuntu
+# скрипт сам находит /usr/bin/chromium и google-chrome; если не находит — укажите CHROME_PATH=/usr/bin/chromium в .env
+```
+
+**Скрипт развёртывания и обновления (можно запускать повторно)**
+
+Сохраните его как `deploy.sh` и запустите от **root** (`sudo bash deploy.sh`): первый запуск клонирует и инициализирует проект, последующие — это просто «обновление + перезапуск». В конце скрипт передаёт каталог во владение сервисному пользователю, указанному в systemd.
+
+```bash
+#!/usr/bin/env bash
+# Скрипт развёртывания и обновления qwen2api: используется и при первом развёртывании, и для последующих обновлений, можно запускать повторно.
+# Запускать от root: sudo bash deploy.sh
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/qwen2api}"      # каталог развёртывания
+REPO="${REPO:-https://github.com/Rfym21/Qwen2API.git}"
+SERVICE="${SERVICE:-qwen2api}"           # имя systemd-сервиса
+RUN_USER="${RUN_USER:-qwen2api}"         # пользователь, от которого работает сервис (если его нет, chown пропускается)
+
+# 1) Bun (устанавливается, только если его нет; под root — в /root/.bun, нужен для сборки)
+if ! command -v bun >/dev/null 2>&1; then
+  curl -fsSL https://bun.sh/install | bash
+  export PATH="$HOME/.bun/bin:$PATH"
+fi
+bun --version
+
+# 2) Код: при первом запуске clone, дальше — fast-forward pull
+if [ -d "$APP_DIR/.git" ]; then
+  git -C "$APP_DIR" pull --ff-only
+else
+  mkdir -p "$APP_DIR"
+  git clone --depth 1 "$REPO" "$APP_DIR"
+fi
+cd "$APP_DIR"
+
+# 3) Зависимости + фронтенд (по lockfile, воспроизводимые версии; --production пропускает eslint и прочие dev-зависимости)
+bun install --frozen-lockfile --production
+bun install --cwd public --frozen-lockfile
+bun run build:frontend
+
+# 4) Конфигурация: создаётся только при первом запуске, существующий .env не перезаписывается
+[ -f .env ] || cp .env.example .env
+
+# 5) Каталог передаётся во владение сервисному пользователю (если такого пользователя нет, шаг пропускается)
+if id -u "$RUN_USER" >/dev/null 2>&1; then
+  chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
+fi
+
+# 6) Перезапуск systemd-сервиса, если он установлен, иначе подсказка для запуска в foreground
+if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
+  systemctl restart "$SERVICE"
+  systemctl --no-pager --lines=10 status "$SERVICE" || true
+else
+  echo "首次部署：编辑 $APP_DIR/.env（至少填 API_KEY 和账号），然后启动："
+  echo "  cd $APP_DIR && bun run start"
+fi
+```
+
+**Сервис systemd (автозапуск при загрузке + перезапуск при падении)**
+
+```bash
+# Разовая подготовка: отдельный пользователь + каталог развёртывания + Bun под этим пользователем (нужен для ExecStart)
+sudo useradd --system --create-home --home-dir /home/qwen2api --shell /usr/sbin/nologin qwen2api
+sudo mkdir -p /opt/qwen2api
+sudo -u qwen2api -H bash -c 'curl -fsSL https://bun.sh/install | bash'
+```
+
+```ini
+# /etc/systemd/system/qwen2api.service
+[Unit]
+Description=Qwen2API (Bun)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qwen2api
+WorkingDirectory=/opt/qwen2api
+Environment=PATH=/home/qwen2api/.bun/bin:/usr/local/bin:/usr/bin:/bin
+# скрипт сбора сам находит /usr/bin/chromium или google-chrome; путь задаётся явно, только если найти не удалось:
+# Environment=CHROME_PATH=/usr/bin/chromium
+ExecStart=/home/qwen2api/.bun/bin/bun --no-env-file src/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+# статистика аккаунтов, лимиты и переиспользование сессий хранятся в памяти процесса: только один экземпляр, не запускайте несколько
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now qwen2api
+curl -s http://127.0.0.1:3000/api/health        # ответ 200 означает успешный запуск
+```
+
+**Обновление**
+
+```bash
+cd /opt/qwen2api
+git pull --ff-only                              # или просто запустите deploy.sh ещё раз
+bun install --frozen-lockfile --production
+bun install --cwd public --frozen-lockfile
+bun run build:frontend
+sudo systemctl restart qwen2api
+```
+
+**Остановка / перезапуск / логи**
+
+```bash
+sudo systemctl stop qwen2api                    # остановить
+sudo systemctl restart qwen2api                 # перезапустить
+sudo systemctl status qwen2api                  # статус
+sudo journalctl -u qwen2api -f                  # логи в реальном времени (выход по Ctrl+C)
+sudo journalctl -u qwen2api --since '10 min ago' # последние 10 минут
+```
+
+При запуске в foreground остановка выполняется по `Ctrl+C`; если нужен фоновый режим без systemd, используйте `nohup bun run start > qwen2api.log 2>&1 &`, а для остановки — `kill <PID>`.
+
+**Данные и резервные копии**
+
+- `data/`: аккаунты, отпечатки сессий браузера (`browser-profile.<почта>.json`), статистика — **обязательно к резервному копированию**
+- `.env`: ключи и конфигурация
+- `public/dist/`: результат сборки фронтенда, можно пересобрать в любой момент
+
+Порт меняется параметром `SERVICE_PORT` в `.env` (по умолчанию 3000); перед развёртыванием нескольких реплик нужно сначала решить вопрос общего состояния процессов, иначе статистика и лимиты будут считаться в каждом процессе отдельно.
+
 ### 🌐 Прокси для каждого аккаунта / Per-account proxy
 
 Каждому аккаунту можно назначить собственный исходящий прокси, чтобы разные аккаунты ходили с разных IP одновременно и не попадали под массовый бан `chat.qwen.ai` по корреляции IP.
@@ -251,25 +390,18 @@ docker compose pull && docker compose up -d
 
 ### 📦 Локальное развертывание
 
-```bash
-# Клонировать проект
-git clone https://github.com/Rfym21/Qwen2API.git
-cd Qwen2API
+Рекомендуется сразу использовать скрипт из раздела ⚡ Развёртывание одной командой и управление сервисом (исходники на Bun, рекомендуется) выше: его можно запускать повторно, первое развёртывание и последующие обновления выполняются одной и той же командой.
 
-# Установить зависимости
+Минимальные шаги при ручном развёртывании:
+
+```bash
+git clone https://github.com/Rfym21/Qwen2API.git && cd Qwen2API
 bun install --frozen-lockfile
 bun install --cwd public --frozen-lockfile
 bun run build:frontend
-
-# Настроить переменные окружения
-cp .env.example .env
-# Отредактировать файл .env
-
-# Запустить один процесс Bun
-bun run start
-
-# Режим разработки
-bun run dev
+cp .env.example .env          # как минимум заполните API_KEY и аккаунты
+bun run start                 # = bun --no-env-file src/server.js
+bun run dev                   # режим разработки (--watch)
 ```
 
 ### Запуск и проверка
