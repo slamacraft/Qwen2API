@@ -232,7 +232,10 @@ const EXHAUSTED_TURN_MESSAGES = Object.freeze({
   [REASONS.BARE]: '上游连续返回未声明完成状态的文本，已阻止 Agent 将未完成任务误判为结束',
   [REASONS.INVALID_CONTROL]: '上游连续返回无效的 Agent 完成标记',
   [REASONS.TOOL_ERROR]: '上游连续返回残缺、非法或不存在的工具调用',
-  [REASONS.PROSE_WITH_TOOLS]: '上游连续返回残缺、非法或不存在的工具调用',
+  // 和 TOOL_ERROR 共用过一句话，但两者的处理办法完全不同：这条是「模型在调用工具前
+  // 写了正文」，属于**策略**而不是协议坏掉。把开关写进错误里，客户端/用户才知道下一步
+  // 该做什么（默认严格模式是为了让 agentic 客户端拿到干净的工具轮）。
+  [REASONS.PROSE_WITH_TOOLS]: '上游连续把「正文 + 工具调用」放在同一轮（本代理默认要求工具调用单独成轮）。如果客户端能处理这种形态，可设置 AGENT_TURN_ALLOW_PROSE_WITH_TOOLS=true',
   [REASONS.REQUIRED_TOOL]: '上游连续违反 tool_choice，未返回要求的工具调用',
   [REASONS.INTERCEPTED]: '上游的工具调用被平台拦截，重试后仍未恢复',
   [REASONS.MALFORMED_PROTOCOL]: '上游持续返回残缺的工具调用协议，未能恢复为可执行调用'

@@ -8,6 +8,7 @@ const { applyProxyToAxiosConfig, getChatBaseUrl } = require('./proxy-helper');
 const { generateUUID, jitter } = require('./tools.js')
 const { uploadAgentContextFile, buildChatFileDescriptor } = require('./upload.js')
 const { buildRequestHeaders } = require('./header-profile')
+const { ensureFreshProfileToken, hasOwnProfile, canAttemptProvision, provisionProfile } = require('./browser-profile')
 const {
     ContextExternalizationError, isTransportInterruption, assertChatChallengeBreakerClosed,
     bindChatChallengeContext, chatChallengeFrom, isWafChallengeError, releaseChatProbe,
@@ -31,6 +32,9 @@ const isRetryableNetworkError = (error) => {
 }
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
+// 只提示一次：同一个账号缺指纹时不要每个请求刷一条
+const warnedMissingProfile = new Set()
 
 const HTML_BODY_MAX_BYTES = 256 * 1024
 
@@ -673,6 +677,38 @@ const externalizeOversizedAgentContext = async (
 }
 
 /**
+ * 请求前的自愈：账号有邮箱密码但还没有浏览器会话（baxia 指纹）时，服务端自己登录一次补上。
+ *
+ * 为什么放在这里：账号没有指纹时会被轮换器直接排除，调用方只看到「缺指纹」的错误。
+ * 而补指纹这件事服务端自己就能做（无头 Chrome 里用账号密码登录），用户不需要本机 Chrome。
+ * 失败后该账号冷却 10 分钟（canAttemptProvision），不会每个请求都去登录一次。
+ *
+ * @param {string[]} excludeEmails 本次请求已排除的账号
+ * @returns {Promise<boolean>} 是否补成功了一个账号
+ */
+const provisionMissingFingerprint = async (excludeEmails) => {
+    const accounts = Array.isArray(accountManager.accountTokens) ? accountManager.accountTokens : []
+    const candidate = accounts.find(account => account
+        && account.email
+        && !account.disabled
+        && account.password
+        && !excludeEmails.includes(account.email)
+        && !hasOwnProfile(account.email)
+        && canAttemptProvision(account.email))
+    if (!candidate) return false
+
+    try {
+        await provisionProfile(candidate.email, candidate)
+        logger.info(`账号 ${candidate.email} 的浏览器会话已自动补上，重试本次请求`, 'REQUEST', '✅')
+        return true
+    } catch (error) {
+        // provisionProfile 内部已经记了冷却；这里只让调用方拿到「补不上」的结论
+        logger.warn(`账号 ${candidate.email} 自动生成浏览器会话失败: ${error.message}`, 'REQUEST')
+        return false
+    }
+}
+
+/**
  * 发送聊天请求
  * @param {Object} body - 请求体
  * @param {Object} [options] - Cuenta y continuidad de la solicitud
@@ -683,10 +719,21 @@ const sendChatRequest = async (body, options = {}) => {
     // excludeEmails：本次 HTTP 请求里已经烧掉的账户（流中途 failover）——轮换器跳过它们，
     // 即使它们对其他请求仍然可用。
     const excludeEmails = Array.isArray(options.excludeEmails) ? options.excludeEmails : []
-    const currentAccount = options.currentAccount?.token
+    let currentAccount = options.currentAccount?.token
         ? options.currentAccount
         : accountManager.getAccount(excludeEmails)
-    const currentToken = currentAccount ? currentAccount.token : null
+    let currentToken = currentAccount ? currentAccount.token : null
+
+    if (!currentToken) {
+        // 自愈：没有可用账号时，先试着给「有密码但缺浏览器会话」的账号补一个指纹再重试一次。
+        // 这样「切到一个还没生成会话的账号」不再直接失败，服务器部署也不需要用户碰命令行。
+        if (await provisionMissingFingerprint(excludeEmails)) {
+            currentAccount = options.currentAccount?.token
+                ? options.currentAccount
+                : accountManager.getAccount(excludeEmails)
+            currentToken = currentAccount ? currentAccount.token : null
+        }
+    }
 
     if (!currentToken) {
         // 把具体原因（data.json 损坏 / 尚未初始化 / 没有账户）透传给客户端，
@@ -717,13 +764,26 @@ const sendChatRequest = async (body, options = {}) => {
 const postChatRequest = async (body, options, currentAccount, currentToken, breakerContext) => {
     const chatBaseUrl = getChatBaseUrl()
 
-    // Antidetect: per-account fingerprint headers replace static block
-    const ssxmod = getSsxmodForAccount(currentAccount)
+    // 浏览器指纹的 access token 只有 15 分钟寿命：过期就自动从浏览器重采一次（该账号有指纹时）
+    const browserProfile = await ensureFreshProfileToken(currentAccount && currentAccount.email)
+
+    // 没有指纹的账号发出去必然被 WAF 拒（unauthorized），提示一次，别让人去猜
+    if (!browserProfile && currentAccount && currentAccount.email && !warnedMissingProfile.has(currentAccount.email)) {
+        warnedMissingProfile.add(currentAccount.email)
+        logger.warn(
+            `账号 ${currentAccount.email} 没有浏览器指纹文件，上游很可能拒绝该请求；请先用 scripts/harvest-browser-profile.mjs 为它采集`,
+            'REQUEST'
+        )
+    }
+
+    // 有浏览器指纹时请求会带真实浏览器的 cookie，不必再合成 ssxmod（省掉每次请求的生成开销）
+    const ssxmod = browserProfile ? null : getSsxmodForAccount(currentAccount)
     const headers = buildRequestHeaders(currentAccount, {
         chatBaseUrl,
         token: currentToken,
-        ssxmodItna: ssxmod.ssxmod_itna,
-        ssxmodItna2: ssxmod.ssxmod_itna2,
+        browserProfile,
+        ssxmodItna: ssxmod && ssxmod.ssxmod_itna,
+        ssxmodItna2: ssxmod && ssxmod.ssxmod_itna2,
         accept: 'application/json',
         extra: {
             'x-request-id': generateUUID(),
@@ -731,7 +791,8 @@ const postChatRequest = async (body, options, currentAccount, currentToken, brea
         }
     })
 
-    // 构建请求配置（与通义千问 React Web 客户端完全一致，对齐 FE 0.3.19）
+    // 构建请求配置（与通义千问 React Web 客户端完全一致；`Version` 头由
+    // header-profile.js 统一补上，原因见那里的注释）
     const requestConfig = {
         headers,
         responseType: 'stream', // Always use streaming (upstream doesn't support stream=false)
@@ -755,7 +816,7 @@ const postChatRequest = async (body, options, currentAccount, currentToken, brea
     // 浏览器 referer 为 /c/<chat_id>（在 chat_id 生成后动态设置）
     requestConfig.headers.referer = `${chatBaseUrl}/c/${chat_id}`
     const url = `${chatBaseUrl}/api/v2/chat/completions?chat_id=` + chat_id
-    // 对齐网页双写 chatId/parentId（FE 0.3.19）
+    // 对齐网页双写 chatId/parentId
     const parentId = options.parentId ?? body.parentId ?? body.parent_id ?? null
     const messages = Array.isArray(body.messages)
         ? body.messages.map(message => ({
@@ -909,13 +970,17 @@ const generateChatID = async (currentToken, model, account, chatType = 't2t') =>
     try {
         const chatBaseUrl = getChatBaseUrl()
 
+        // 同上：/chats/new 也用 Bearer 鉴权，token 过期会直接 401
+        const browserProfile = await ensureFreshProfileToken(account && account.email)
+
         // Antidetect: per-account fingerprint headers replace static block
-        const ssxmod = getSsxmodForAccount(account)
+        const ssxmod = browserProfile ? null : getSsxmodForAccount(account)
         const headers = buildRequestHeaders(account, {
             chatBaseUrl,
             token: currentToken,
-            ssxmodItna: ssxmod.ssxmod_itna,
-            ssxmodItna2: ssxmod.ssxmod_itna2,
+            browserProfile,
+            ssxmodItna: ssxmod && ssxmod.ssxmod_itna,
+            ssxmodItna2: ssxmod && ssxmod.ssxmod_itna2,
             accept: 'application/json, text/plain, */*',
             refererPath: '/c/new-chat',
             extra: {
@@ -929,7 +994,7 @@ const generateChatID = async (currentToken, model, account, chatType = 't2t') =>
 
         applyProxyToAxiosConfig(requestConfig, account);
 
-        // 对齐 chat.qwen.ai FE 0.3.19：chatId/project_id + normal 模式
+        // 对齐 chat.qwen.ai 前端：chatId/project_id + normal 模式
         const response_data = await axios.post(`${chatBaseUrl}/api/v2/chats/new`, {
             chatId: '',
             models: [model],

@@ -1,3 +1,185 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+    font-feature-settings: 'tnum' 1;
+  }
+
+  /* 统一细滚动条，避免默认灰条把卡片撑破 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #d0d5dd transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #d0d5dd;
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-200 ring-offset-1 ring-offset-surface;
+  }
+}
+
+@layer components {
+  /* ---------- 布局 ---------- */
+  .page {
+    @apply px-6 py-6 max-w-[1440px] mx-auto;
+  }
+
+  .page-head {
+    @apply flex flex-wrap items-start justify-between gap-3 mb-5;
+  }
+
+  .page-title {
+    @apply text-xl font-semibold text-ink leading-7;
+  }
+
+  .page-sub {
+    @apply text-sm text-ink-mute mt-0.5;
+  }
+
+  /* ---------- 卡片 ---------- */
+  .card {
+    @apply bg-surface border border-line rounded-card shadow-card;
+  }
+
+  .card-header {
+    @apply flex items-center justify-between gap-3 px-5 py-4 border-b border-line;
+  }
+
+  .card-title {
+    @apply text-sm font-semibold text-ink;
+  }
+
+  .card-body {
+    @apply p-5;
+  }
+
+  /* ---------- 按钮 ---------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-control border text-sm font-medium transition-colors select-none disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-control border text-sm font-medium transition-colors select-none disabled:opacity-50 disabled:cursor-not-allowed bg-brand-600 border-brand-600 text-white hover:bg-brand-700;
+  }
+
+  .btn-default {
+    @apply inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-control border text-sm font-medium transition-colors select-none disabled:opacity-50 disabled:cursor-not-allowed bg-surface border-line text-ink-soft hover:bg-canvas hover:text-ink;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-control border text-sm font-medium transition-colors select-none disabled:opacity-50 disabled:cursor-not-allowed bg-surface border-danger-200 text-danger-600 hover:bg-danger-50;
+  }
+
+  .btn-sm {
+    @apply h-8 px-2.5 text-xs gap-1;
+  }
+
+  .btn-icon {
+    @apply inline-flex items-center justify-center h-8 w-8 rounded-control border border-transparent text-ink-mute transition-colors hover:bg-canvas hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  /* ---------- 表单 ---------- */
+  .input {
+    @apply h-9 w-full px-3 rounded-control border border-line bg-surface text-sm text-ink placeholder:text-ink-mute outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-100;
+  }
+
+  .select {
+    @apply h-9 px-3 rounded-control border border-line bg-surface text-sm text-ink outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-100;
+  }
+
+  .textarea {
+    @apply w-full px-3 py-2 rounded-control border border-line bg-surface text-sm text-ink placeholder:text-ink-mute outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-100 resize-none;
+  }
+
+  .label {
+    @apply block text-xs font-medium text-ink-soft mb-1.5;
+  }
+
+  /* ---------- 徽章 ---------- */
+  .badge {
+    @apply inline-flex items-center gap-1 h-6 px-2 rounded-full text-xs font-medium border whitespace-nowrap;
+  }
+
+  .badge-ok {
+    @apply bg-ok-50 border-ok-100 text-ok-700;
+  }
+
+  .badge-warn {
+    @apply bg-warn-50 border-warn-100 text-warn-700;
+  }
+
+  .badge-danger {
+    @apply bg-danger-50 border-danger-100 text-danger-700;
+  }
+
+  .badge-brand {
+    @apply bg-brand-50 border-brand-100 text-brand-700;
+  }
+
+  .badge-mute {
+    @apply bg-canvas border-line text-ink-mute;
+  }
+
+  /* ---------- 表格 ---------- */
+  .table-wrap {
+    @apply overflow-x-auto;
+  }
+
+  .data-table {
+    @apply w-full text-sm border-collapse;
+  }
+
+  .data-table th {
+    @apply text-left font-medium text-ink-mute text-xs uppercase tracking-wide px-4 py-2.5 border-b border-line bg-canvas/70 whitespace-nowrap;
+  }
+
+  .data-table td {
+    @apply px-4 py-3 border-b border-line align-middle;
+  }
+
+  .data-table tbody tr:hover {
+    @apply bg-canvas/60;
+  }
+
+  .data-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  /* ---------- 其他 ---------- */
+  .mono {
+    @apply font-mono text-xs;
+  }
+
+  .kpi-value {
+    @apply text-2xl font-semibold text-ink tabular-nums leading-8;
+  }
+
+  .kpi-label {
+    @apply text-xs text-ink-mute;
+  }
+
+  .skeleton {
+    @apply animate-pulse bg-canvas rounded-control;
+  }
+}

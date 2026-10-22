@@ -1,745 +1,377 @@
 <template>
-  <div class="dashboard-scroll w-100vw h-100vh p-4 overflow-y-auto">
-    <div class="container mx-auto">
-      <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 px-4 space-y-4 md:space-y-0 pt-5">
-        <h1 class="text-4xl font-bold">{{ t('dash.title') }} <span class="text-gray-500 text-sm">by 兜豆子</span></h1>
-        <div class="flex flex-col md:flex-row md:items-center w-full md:w-auto gap-3">
-          <!-- 6 buttons in 2 rows on desktop (3+3), 2 columns on mobile -->
-          <div class="flex gap-2">
-          <button @click="showAddModal = true"
-                  class="action-button font-bold border border-green-200 bg-green-50 text-green-900 px-4 py-2 rounded-xl shadow-sm hover:bg-green-100 hover:border-green-400 transition-all duration-300 transform hover:-translate-y-1 active:translate-y-0 text-center">
-            {{ t('dash.addAccount') }}
-          </button>
-          <button @click="refreshAllAccounts"
-                  :disabled="isRefreshingAll"
-                  :class="[
-                    'action-button font-bold px-4 py-2 rounded-xl shadow-sm transition-all duration-300 transform active:translate-y-0',
-                    isRefreshingAll
-                      ? 'bg-purple-400 text-white border-purple-400 refreshing-button-purple cursor-not-allowed transform-none'
-                      : 'macaron-purple-button text-purple-800 hover:-translate-y-1'
-                  ]">
-            <span v-if="isRefreshingAll" class="flex items-center space-x-2">
-              <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              <span>{{ t('dash.refreshing') }}</span>
-            </span>
-            <span v-else>{{ t('dash.refreshAll') }}</span>
-          </button>
-          <button @click="forceRefreshAllAccounts"
-                  :disabled="isForceRefreshingAll"
-                  :class="[
-                    'action-button font-bold px-4 py-2 rounded-xl shadow-sm transition-all duration-300 transform active:translate-y-0',
-                    isForceRefreshingAll
-                      ? 'bg-pink-400 text-white border-pink-400 refreshing-button-pink cursor-not-allowed transform-none'
-                      : 'macaron-pink-button text-pink-800 hover:-translate-y-1'
-                  ]">
-            <span v-if="isForceRefreshingAll" class="flex items-center space-x-2">
-              <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              <span>{{ t('dash.forceRefreshing') }}</span>
-            </span>
-            <span v-else>{{ t('dash.forceRefresh') }}</span>
-          </button>
-          <button @click="exportAccounts"
-                  class="action-button font-bold border border-yellow-200 bg-yellow-50 text-yellow-900 px-4 py-2 rounded-xl shadow-sm hover:bg-yellow-100 hover:border-yellow-400 transition-all duration-300 transform hover:-translate-y-1 active:translate-y-0 text-center">
-            {{ t('dash.export') }}
-          </button>
-          <router-link to="/statistics"
-                       class="action-button font-bold border border-indigo-200 bg-indigo-50 text-indigo-900 px-4 py-2 rounded-xl shadow-sm hover:bg-indigo-100 hover:border-indigo-400 transition-all duration-300 transform hover:-translate-y-1 active:translate-y-0 text-center">
-            {{ t('dash.statistics') }}
-          </router-link>
-          <router-link to="/settings"
-                       class="action-button font-bold border border-blue-200 bg-blue-50 text-blue-900 px-4 py-2 rounded-xl shadow-sm hover:bg-blue-100 hover:border-blue-400 transition-all duration-300 transform hover:-translate-y-1 active:translate-y-0 text-center">
-            {{ t('dash.settings') }}
-          </router-link>
-          <router-link to="/chat"
-                       class="action-button font-bold border border-blue-200 bg-blue-50 text-blue-900 px-4 py-2 rounded-xl shadow-sm hover:bg-blue-100 hover:border-blue-400 transition-all duration-300 transform hover:-translate-y-1 active:translate-y-0 text-center">
-            {{ t('dash.chat') }}
-          </router-link>
-          </div>
-          <LangSwitcher class="self-center md:self-auto" />
-        </div>
+  <div class="page">
+    <!-- 页头：说明 + 主操作（顶栏标题与语言切换由 AdminLayout 提供，这里不再重复标题） -->
+    <div class="page-head">
+      <div>
+        <p class="page-sub">{{ t('accounts.subtitle', { n: totalAccounts }) }}</p>
       </div>
-
-      <!-- 分页控制区 -->
-      <div class="flex justify-between items-center px-4 mb-4">
-        <div class="flex items-center space-x-2">
-          <span class="text-gray-700">{{ t('dash.perPage') }}</span>
-          <select v-model="pageSize" @change="changePageSize" class="rounded-lg border-gray-300 bg-white/50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition-all duration-300">
-            <option :value="10">10</option>
-            <option :value="20">20</option>
-            <option :value="50">50</option>
-            <option :value="100">100</option>
-            <option :value="200">200</option>
-          </select>
-        </div>
-        <div class="flex space-x-2 items-center">
-          <span class="text-gray-700">{{ t('dash.totalItems', { n: totalItems }) }}</span>
-          <button
-            @click="changePage(currentPage - 1)"
-            :disabled="currentPage === 1"
-            :class="[
-              'px-3 py-1 rounded-lg transition-all duration-300',
-              currentPage === 1 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
-            ]"
-          >
-            {{ t('dash.prevPage') }}
-          </button>
-          <span class="text-gray-700">{{ currentPage }}/{{ totalPages }}</span>
-          <button
-            @click="changePage(currentPage + 1)"
-            :disabled="currentPage === totalPages || totalPages === 0"
-            :class="[
-              'px-3 py-1 rounded-lg transition-all duration-300',
-              currentPage === totalPages || totalPages === 0 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
-            ]"
-          >
-            {{ t('dash.nextPage') }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 多选操作区 -->
-      <div class="flex justify-between items-center px-4 mb-4">
-        <div class="flex items-center space-x-3">
-          <label class="inline-flex items-center cursor-pointer group">
-            <div class="relative">
-              <input type="checkbox"
-                    v-model="selectAll"
-                    @change="toggleSelectAll"
-                    class="sr-only peer">
-              <div class="w-6 h-6 bg-white border-2 border-gray-300 rounded-lg peer-checked:bg-indigo-500 peer-checked:border-indigo-500 transition-all duration-300 flex items-center justify-center">
-                <svg v-show="selectAll" class="w-4 h-4 text-white" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-              </div>
-            </div>
-            <span class="ml-2 text-gray-700 group-hover:text-indigo-700 transition-colors duration-200">{{ t('dash.selectAll') }}</span>
-          </label>
-          <button
-            @click="deleteSelected"
-            :disabled="selectedTokens.length === 0"
-            :class="[
-              'px-4 py-1.5 rounded-lg transition-all duration-300 border flex items-center space-x-1',
-              selectedTokens.length === 0 ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' : 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
-            ]"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
-            </svg>
-            <span>{{ t('dash.deleteSelected', { n: selectedTokens.length }) }}</span>
-          </button>
-        </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="btn-default" @click="exportAccounts">
+          <Icon name="download" :size="16" />
+          {{ t('accounts.export') }}
+        </button>
+        <button type="button" class="btn-default" :disabled="isRefreshingAll" @click="refreshAllAccounts">
+          <Icon name="refresh" :size="16" :class="isRefreshingAll ? 'animate-spin' : ''" />
+          {{ isRefreshingAll ? t('accounts.refreshing') : t('accounts.refreshAll') }}
+        </button>
+        <button type="button" class="btn-default" :disabled="isForceRefreshingAll" @click="forceRefreshAllAccounts">
+          <Icon name="refresh" :size="16" :class="isForceRefreshingAll ? 'animate-spin' : ''" />
+          {{ isForceRefreshingAll ? t('accounts.forceRefreshing') : t('accounts.forceRefresh') }}
+        </button>
+        <!-- 一键补全会话：只在存在「缺会话且未禁用」的账号时出现 -->
         <button
-          @click="showDeleteAllConfirm = true"
-          class="px-4 py-1.5 rounded-lg border border-red-300 bg-red-50 text-red-700 hover:bg-red-100 transition-all duration-300 flex items-center space-x-1"
+          v-if="fingerprintQueue.length"
+          type="button"
+          class="btn-default"
+          :disabled="isProvisioningAll"
+          @click="provisionAllFingerprints"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
-          </svg>
-          <span>{{ t('dash.deleteAll') }}</span>
+          <Icon name="refresh" :size="16" :class="isProvisioningAll ? 'animate-spin' : ''" />
+          {{ isProvisioningAll
+            ? t('accounts.provisioningAll', { done: provisionProgress.done, total: provisionProgress.total })
+            : t('accounts.provisionAll', { n: fingerprintQueue.length }) }}
+        </button>
+        <button type="button" class="btn-primary" @click="showAddModal = true">
+          <Icon name="plus" :size="16" />
+          {{ t('accounts.addAccount') }}
         </button>
       </div>
+    </div>
 
-      <!-- Token列表 -->
-      <div class="max-h-[calc(75vh)] overflow-y-auto pr-2 scrollbar-hidden">
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 p-4">
-          <div v-for="token in displayedTokens"
-               :key="token.email"
-               class="token-card group relative overflow-hidden rounded-2xl transition-all duration-300 hover:shadow-2xl pt-4"
-               :class="[
-                 { 'ring-2 ring-indigo-500 ring-opacity-75': isSelected(token.email) },
-                 { 'opacity-60 grayscale': isOnCooldown(token.email) }
-               ]">
-            <div class="absolute top-3 left-3 z-10">
-              <label class="custom-checkbox cursor-pointer">
-                <input type="checkbox"
-                       :checked="isSelected(token.email)"
-                       @change="toggleSelect(token.email)"
-                       class="sr-only peer">
-                <div class="checkbox-icon w-6 h-6 bg-white/70 backdrop-blur-sm border-2 border-gray-300 rounded-lg peer-checked:bg-indigo-500 peer-checked:border-indigo-500 transition-all duration-300 flex items-center justify-center shadow-sm hover:shadow">
-                  <svg v-show="isSelected(token.email)" class="w-4 h-4 text-white transform scale-0 peer-checked:scale-100 transition-transform duration-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                </div>
-              </label>
-            </div>
-            <div class="absolute top-3 right-3 z-10 flex items-center gap-1 text-lg leading-none select-none"
-                 :title="getStatusTooltip(token.email)">
-              <span>{{ getStatusEmoji(token.email) }}</span>
-              <span v-if="isOnCooldown(token.email)"
-                    class="text-sm font-mono text-gray-700">{{ getCountdown(token.email) }}</span>
-            </div>
-            <div class="absolute inset-0 bg-white/30 backdrop-blur-md border border-white/30"></div>
-            <div class="relative p-6 flex flex-col gap-4">
-              <div class="flex flex-col space-y-3">
-                <div class="relative flex items-center bg-blue-50/80 rounded-lg px-2 py-1">
-                  <div class="overflow-x-auto scrollbar-hide flex-1 flex items-center space-x-2">
-                    <span class="text-gray-700 min-w-[96px] text-left font-semibold">📧 Email:</span>
-                    <span class="font-medium whitespace-nowrap text-left">{{ token.email }}</span>
-                  </div>
-                  <button @click="copyToClipboard(token.email)" class="absolute right-2 opacity-0 hover:opacity-100 transition-opacity bg-blue-200 hover:bg-blue-300 rounded px-2 py-1 text-base">📋</button>
-                </div>
-                <div class="relative flex items-center bg-blue-50/80 rounded-lg px-2 py-1">
-                  <div class="overflow-x-auto scrollbar-hide flex-1 flex items-center space-x-2">
-                    <span class="text-gray-700 min-w-[96px] text-left font-semibold">🔑 Passwd:</span>
-                    <span class="font-medium whitespace-nowrap text-left">{{ token.password }}</span>
-                  </div>
-                  <button @click="copyToClipboard(token.password)" class="absolute right-2 opacity-0 hover:opacity-100 transition-opacity bg-blue-200 hover:bg-blue-300 rounded px-2 py-1 text-base">📋</button>
-                </div>
-                <div class="relative flex items-center bg-blue-50/80 rounded-lg px-2 py-1">
-                  <div class="overflow-x-auto scrollbar-hide flex-1 flex items-center space-x-2">
-                    <span class="text-gray-700 min-w-[96px] text-left font-semibold">🔐 Token:</span>
-                    <span class="font-medium whitespace-nowrap text-left text-sm">{{ token.token }}</span>
-                  </div>
-                  <!-- token 已由后端掩码，复制按钮无意义，故移除 -->
-                </div>
-                <div class="relative flex items-center bg-blue-50/80 rounded-lg px-2 py-1">
-                  <div class="overflow-x-auto scrollbar-hide flex-1 flex items-center space-x-2">
-                    <span class="text-gray-700 min-w-[96px] text-left font-semibold">⏰ Expire:</span>
-                    <span class="font-medium whitespace-nowrap text-left">{{ new Date(token.expires * 1000).toLocaleString() }}</span>
-                  </div>
-                  <button @click="copyToClipboard(new Date(token.expires * 1000).toLocaleString())" class="absolute right-2 opacity-0 hover:opacity-100 transition-opacity bg-blue-200 hover:bg-blue-300 rounded px-2 py-1 text-base">📋</button>
-                </div>
-                <div class="relative flex items-center bg-blue-50/80 rounded-lg px-2 py-1">
-                  <div class="overflow-x-auto scrollbar-hide flex-1 flex items-center space-x-2">
-                    <span class="text-gray-700 min-w-[96px] text-left font-semibold">🌐 Proxy:</span>
-                    <span class="font-medium whitespace-nowrap text-left text-sm" :title="token.proxy || ''">{{ token.proxy || '—' }}</span>
-                  </div>
-                  <button v-if="token.proxy" @click="copyToClipboard(token.proxy)" class="absolute right-2 opacity-0 hover:opacity-100 transition-opacity bg-blue-200 hover:bg-blue-300 rounded px-2 py-1 text-base">📋</button>
-                </div>
-              </div>
+    <AccountToolbar
+      v-model:search="search"
+      v-model:status="statusFilter"
+      v-model:sort="sortKey"
+      v-model:view="view"
+      :matching="filteredAccounts.length"
+      :selected-count="selectedEmails.length"
+      :all-selected="allFilteredSelected"
+      @select-all="toggleAllFiltered"
+      @clear-selection="clearSelection"
+      @delete-selected="deleteSelected"
+      @delete-all="deleteAllAccounts"
+    />
 
-              <div class="bg-white/40 backdrop-blur-sm border border-white/40 rounded-2xl px-4 py-3 text-sm space-y-1 transition-all">
-                <div class="flex items-baseline justify-between gap-2">
-                  <span class="text-gray-600">{{ t('dash.acct.chatToday') }}:</span>
-                  <span class="font-medium text-gray-800 text-xs md:text-sm">
-                    <span :title="String(getAccountStats(token.email).chat.input)">{{ formatCompact(getAccountStats(token.email).chat.input) }}</span>
-                    in /
-                    <span :title="String(getAccountStats(token.email).chat.output)">{{ formatCompact(getAccountStats(token.email).chat.output) }}</span>
-                    out
-                  </span>
-                </div>
-                <template v-if="isCliInactive(token.email)">
-                  <div class="flex items-baseline justify-between gap-2 w-full text-left">
-                    <span class="text-gray-400 border-b border-dotted border-gray-300 transition-colors"
-                          :title="getCliTooltip(token.email)">
-                      {{ t('dash.acct.cliToday') }}:
-                    </span>
-                    <span class="font-medium text-gray-400 text-xs md:text-sm"
-                          :title="getCliTooltip(token.email)">
-                      {{ getCliInactiveLabel(token.email) }}
-                    </span>
-                  </div>
-                </template>
-                <template v-else-if="getCliState(token.email) === 'pending'">
-                  <div class="flex items-baseline justify-between gap-2 w-full text-left">
-                    <span class="text-blue-400 border-b border-dotted border-blue-300 transition-colors"
-                          :title="getCliTooltip(token.email)">
-                      {{ t('dash.acct.cliToday') }}:
-                    </span>
-                    <span class="font-medium text-blue-400 text-xs md:text-sm"
-                          :title="getCliTooltip(token.email)">
-                      {{ t('dash.acct.cliPendingShort') }}
-                    </span>
-                  </div>
-                </template>
-                <button v-else type="button"
-                        @click="toggleCliExpanded"
-                        class="flex items-baseline justify-between gap-2 w-full text-left focus:outline-none">
-                  <span class="text-gray-600 border-b border-dotted border-gray-400 hover:text-gray-800 transition-colors">
-                    {{ t('dash.acct.cliToday') }}:
-                  </span>
-                  <span class="font-medium text-gray-800 text-xs md:text-sm flex items-center gap-1">
-                    <span>{{ getCliRequestNumber(token.email) }} / {{ getCliQuotaLimit(token.email) }} {{ t('dash.acct.calls') }}</span>
-                    <span class="text-xs text-gray-400 transition-transform duration-200" :class="{ 'rotate-90': cliExpanded }">▸</span>
-                  </span>
-                </button>
-                <transition name="fade">
-                  <div v-if="cliExpanded && getCliState(token.email) === 'available'" class="space-y-1 pt-1">
-                    <div class="text-xs text-gray-500 text-right">
-                      {{ t('dash.acct.cliSuccess') }}: {{ getAccountStats(token.email).cli.calls }}
-                    </div>
-                    <div class="h-2 bg-gray-200/60 rounded-full overflow-hidden">
-                      <div :style="{ width: getCliProgressPct(token.email) + '%' }"
-                           :class="getCliProgressColor(token.email)"
-                           class="h-full transition-all duration-300"></div>
-                    </div>
-                    <div class="text-xs text-gray-500 text-right">
-                      <span :title="String(getAccountStats(token.email).cli.input)">{{ formatCompact(getAccountStats(token.email).cli.input) }}</span>
-                      in /
-                      <span :title="String(getAccountStats(token.email).cli.output)">{{ formatCompact(getAccountStats(token.email).cli.output) }}</span>
-                      out
-                    </div>
-                  </div>
-                </transition>
-              </div>
-
-              <div class="pt-4 mt-auto border-t border-gray-200/50">
-                <div class="flex flex-row gap-2">
-                  <button @click="openEditProxy(token)"
-                          class="flex-1 py-2 px-2 rounded-lg transition-all duration-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 text-xs md:text-sm">
-                    {{ t('dash.editProxy') }}
-                  </button>
-                  <button @click="refreshToken(token.email)"
-                          :disabled="refreshingTokens.includes(token.email)"
-                          :class="[
-                            'flex-1 py-2 px-2 rounded-lg transition-all duration-300 flex items-center justify-center gap-1 text-xs md:text-sm',
-                            refreshingTokens.includes(token.email)
-                              ? 'bg-green-400 text-white refreshing-button-green cursor-not-allowed'
-                              : 'macaron-green-button text-green-600 hover:bg-green-100 border border-green-200'
-                          ]">
-                    <span v-if="refreshingTokens.includes(token.email)" class="flex items-center gap-1">
-                      <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="m4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      <span>{{ t('dash.refreshing') }}</span>
-                    </span>
-                    <span v-else>{{ t('dash.refreshToken') }}</span>
-                  </button>
-                  <button @click="deleteToken(token.email)"
-                          class="flex-1 py-2 px-2 rounded-lg border border-red-200 text-red-600 group-hover:bg-red-50 transition-all duration-300 hover:bg-red-100 text-xs md:text-sm">
-                    {{ t('dash.deleteAccount') }}
-                  </button>
-                </div>
-              </div>
-            </div>
+    <!-- 加载骨架 -->
+    <div v-if="isLoading && accounts.length === 0" class="space-y-3">
+      <div v-if="view === 'table'" class="card p-4">
+        <div class="space-y-3">
+          <div v-for="i in 6" :key="i" class="flex items-center gap-4">
+            <div class="skeleton h-4 w-4 rounded"></div>
+            <div class="skeleton h-4 w-40"></div>
+            <div class="skeleton h-4 w-24"></div>
+            <div class="skeleton h-4 flex-1"></div>
+            <div class="skeleton h-4 w-20"></div>
           </div>
+        </div>
+      </div>
+      <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div v-for="i in 3" :key="i" class="card space-y-3 p-4">
+          <div class="skeleton h-4 w-2/3"></div>
+          <div class="skeleton h-3 w-1/3"></div>
+          <div class="skeleton h-3 w-full"></div>
+          <div class="skeleton h-3 w-5/6"></div>
+          <div class="skeleton h-8 w-full"></div>
         </div>
       </div>
     </div>
 
-    <!-- 删除全部确认对话框 -->
-    <div v-if="showDeleteAllConfirm"
-         class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
-         @click.self="showDeleteAllConfirm = false">
-      <div class="relative bg-white/90 backdrop-blur-lg rounded-2xl p-6 w-11/12 max-w-md transform transition-all duration-300 scale-100 opacity-100">
-        <h2 class="text-2xl font-bold text-red-600 mb-4">{{ t('dash.dangerTitle') }}</h2>
-        <p class="text-gray-700 mb-6">{{ t('dash.dangerText', { n: totalItems }) }}</p>
-        <div class="flex justify-end space-x-4">
-          <button @click="showDeleteAllConfirm = false"
-                  class="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 transition-all duration-300">
-            {{ t('dash.cancel') }}
-          </button>
-          <button @click="deleteAllAccounts"
-                  class="px-4 py-2 rounded-xl bg-red-600 text-white hover:bg-red-700 transition-all duration-300">
-            {{ t('dash.confirmDelete') }}
-          </button>
+    <!-- 空状态：区分「没有账号」与「筛选无结果」 -->
+    <div v-else-if="!filteredAccounts.length" class="card">
+      <div class="flex flex-col items-center gap-3 px-6 py-16 text-center">
+        <div class="flex h-12 w-12 items-center justify-center rounded-full bg-canvas text-ink-mute">
+          <Icon name="users" :size="22" />
         </div>
+        <div>
+          <p class="text-sm font-medium text-ink">
+            {{ hasFilters ? t('accounts.emptyFilteredTitle') : t('accounts.emptyTitle') }}
+          </p>
+          <p class="mt-1 text-xs text-ink-mute">
+            {{ hasFilters ? t('accounts.emptyFilteredHint') : t('accounts.emptyHint') }}
+          </p>
+        </div>
+        <button v-if="hasFilters" type="button" class="btn-default btn-sm" @click="resetFilters">
+          {{ t('accounts.clearFilters') }}
+        </button>
+        <button v-else type="button" class="btn-primary btn-sm" @click="showAddModal = true">
+          <Icon name="plus" :size="14" />
+          {{ t('accounts.addAccount') }}
+        </button>
       </div>
     </div>
 
-    <!-- 添加账号模态框 -->
-    <div v-if="showAddModal"
-         class="fixed inset-0 z-50 overflow-y-auto bg-black/60 px-4 py-6 backdrop-blur-sm"
-          @click.self="closeAddModal">
-      <div :class="[
-            'relative mx-auto flex max-h-[calc(100vh-3rem)] w-full flex-col overflow-hidden rounded-2xl bg-white/80 p-6 backdrop-blur-lg transform transition-all duration-300 scale-100 opacity-100',
-            addMode === 'batch' ? 'max-w-3xl' : 'max-w-md'
-          ]">
-        <div class="mb-6 flex shrink-0 border-b border-gray-200">
-          <button :class="['flex-1 py-2 font-bold transition-all rounded-t-xl duration-300', addMode==='single' ? 'text-gray-600 border-b-2 border-gray-500 bg-gray-50/60' : 'text-gray-500 bg-transparent', isBatchAdding ? 'opacity-50 cursor-not-allowed' : '']" @click="!isBatchAdding && (addMode='single')">{{ t('dash.singleAdd') }}</button>
-          <button :class="['flex-1 py-2 font-bold transition-all rounded-t-xl duration-300', addMode==='batch' ? 'text-gray-600 border-b-2 border-gray-500 bg-gray-50/60' : 'text-gray-500 bg-transparent', isBatchAdding ? 'opacity-50 cursor-not-allowed' : '']" @click="!isBatchAdding && (addMode='batch')">{{ t('dash.batchAdd') }}</button>
-        </div>
-        <div class="modal-scroll min-h-0 flex-1 overflow-y-auto pr-2">
-        <transition name="fade" mode="out-in">
-          <div v-if="addMode==='single'" key="single" class="pr-1">
-            <h2 class="text-xl font-bold mb-4">{{ t('dash.addTitle') }}</h2>
-            <div class="space-y-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700">Email</label>
-                <input v-model="newAccount.email" type="email"
-                       class="mt-1 block w-full rounded-xl border-gray-300 bg-white/50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition-all duration-300 h-12 text-base px-4">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700">Password</label>
-                <input v-model="newAccount.password" type="password"
-                       class="mt-1 block w-full rounded-xl border-gray-300 bg-white/50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition-all duration-300 h-12 text-base px-4">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700">{{ t('dash.proxyLabel') }}</label>
-                <input v-model="newAccount.proxy" type="text" :placeholder="t('dash.proxyPlaceholder')"
-                       :class="[
-                         'mt-1 block w-full rounded-xl bg-white/50 shadow-sm transition-all duration-300 h-12 text-base px-4',
-                         newAccountProxyValid
-                           ? 'border-gray-300 focus:border-indigo-500 focus:ring-indigo-500'
-                           : 'border-red-400 focus:border-red-500 focus:ring-red-500'
-                       ]">
-                <p v-if="!newAccountProxyValid" class="mt-1 text-sm text-red-600">{{ t('msg.proxyInvalid') }}</p>
-              </div>
-              <div class="flex justify-end space-x-4 pt-4">
-                <button @click="closeAddModal"
-                        class="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 transition-all duration-300">
-                  {{ t('dash.cancel') }}
-                </button>
-                <button @click="addToken"
-                        :disabled="!newAccountProxyValid"
-                        class="px-4 py-2 rounded-xl bg-black text-white hover:bg-white hover:text-black transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
-                  {{ t('dash.add') }}
-                </button>
-              </div>
-            </div>
-          </div>
-          <div v-else key="batch" class="pr-1">
-            <h2 class="text-xl font-bold mb-4 px-4">{{ t('dash.batchTitle') }}</h2>
-            <div class="space-y-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 px-4 pb-2">{{ t('dash.batchLabel') }}</label>
-                <textarea v-model="batchAccounts"
-                          :disabled="isBatchAdding"
-                          rows="6"
-                          class="mt-1 block w-full rounded-xl border-gray-300 bg-white/50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition-all duration-300 h-36 text-base px-4 py-3 resize-none disabled:opacity-70"></textarea>
-              </div>
-              <div v-if="batchTask" class="mx-4 rounded-2xl border border-slate-200 bg-white/70 p-5 shadow-sm">
-                <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <div class="text-sm text-slate-500">{{ t('dash.taskStatus') }}</div>
-                    <div class="mt-1 flex items-center gap-3">
-                      <span :class="['inline-flex rounded-full px-3 py-1 text-xs font-semibold', batchTaskStatusClass]">
-                        {{ batchTaskStatusText }}
-                      </span>
-                      <span class="text-sm text-slate-600">{{ batchTask.message }}</span>
-                    </div>
-                  </div>
-                  <div class="text-sm text-slate-500">
-                    {{ t('dash.taskId') }} <span class="font-mono text-slate-700">{{ batchTask.taskId }}</span>
-                  </div>
-                </div>
-
-                <div class="mt-4">
-                  <div class="mb-2 flex items-center justify-between text-sm text-slate-600">
-                    <span>{{ t('dash.progress') }}</span>
-                    <span>{{ batchTask.completed }}/{{ batchTask.total }} · {{ batchTask.progress.toFixed(0) }}%</span>
-                  </div>
-                  <div class="h-3 overflow-hidden rounded-full bg-slate-200">
-                    <div class="h-full rounded-full bg-gradient-to-r from-sky-500 via-cyan-500 to-emerald-500 transition-all duration-500" :style="batchTaskProgressStyle"></div>
-                  </div>
-                </div>
-
-                <div class="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
-                  <div class="rounded-xl bg-slate-50 px-4 py-3">
-                    <div class="text-xs text-slate-500">{{ t('dash.total') }}</div>
-                    <div class="mt-1 text-lg font-semibold text-slate-800">{{ batchTask.total }}</div>
-                  </div>
-                  <div class="rounded-xl bg-emerald-50 px-4 py-3">
-                    <div class="text-xs text-emerald-600">{{ t('dash.success') }}</div>
-                    <div class="mt-1 text-lg font-semibold text-emerald-700">{{ batchTask.success }}</div>
-                  </div>
-                  <div class="rounded-xl bg-rose-50 px-4 py-3">
-                    <div class="text-xs text-rose-600">{{ t('dash.failed') }}</div>
-                    <div class="mt-1 text-lg font-semibold text-rose-700">{{ batchTask.failed }}</div>
-                  </div>
-                  <div class="rounded-xl bg-amber-50 px-4 py-3">
-                    <div class="text-xs text-amber-600">{{ t('dash.skipped') }}</div>
-                    <div class="mt-1 text-lg font-semibold text-amber-700">{{ batchTask.skipped }}</div>
-                  </div>
-                  <div class="rounded-xl bg-violet-50 px-4 py-3">
-                    <div class="text-xs text-violet-600">{{ t('dash.invalid') }}</div>
-                    <div class="mt-1 text-lg font-semibold text-violet-700">{{ batchTask.invalid }}</div>
-                  </div>
-                </div>
-
-                <div v-if="batchTask.activeEmails?.length" class="mt-4 rounded-xl bg-sky-50 px-4 py-3">
-                  <div class="text-sm font-medium text-sky-700">{{ t('dash.processing') }}</div>
-                  <div class="mt-2 flex flex-wrap gap-2">
-                    <span v-for="email in batchTask.activeEmails" :key="email" class="rounded-full bg-white px-3 py-1 text-xs text-sky-700 shadow-sm">
-                      {{ email }}
-                    </span>
-                  </div>
-                </div>
-
-                <div v-if="batchTask.recentResults?.length" class="mt-4">
-                  <div class="mb-2 text-sm font-medium text-slate-700">{{ t('dash.recentResults') }}</div>
-                  <div class="max-h-52 space-y-2 overflow-y-auto pr-1">
-                    <div v-for="item in batchTask.recentResults" :key="`${item.email}-${item.status}-${item.message}`" class="flex items-start justify-between rounded-xl border border-slate-200 bg-white px-4 py-3">
-                      <div class="min-w-0 pr-4">
-                        <div class="truncate text-sm font-medium text-slate-800">{{ item.email }}</div>
-                        <div class="mt-1 text-xs text-slate-500">{{ item.message }}</div>
-                      </div>
-                      <span :class="['inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold', item.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700']">
-                        {{ item.status === 'success' ? t('dash.success') : t('dash.failed') }}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="flex justify-end space-x-4 pt-4">
-                <button @click="closeAddModal"
-                        class="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 transition-all duration-300 disabled:opacity-50">
-                  {{ isBatchAdding ? t('dash.continueBackground') : t('dash.close') }}
-                </button>
-                <button @click="addBatchTokens"
-                        :disabled="isBatchAdding"
-                        class="px-4 py-2 rounded-xl bg-black text-white hover:bg-white hover:text-black transition-all duration-300 disabled:opacity-50">
-                  {{ isBatchAdding ? t('dash.batchRunning') : t('dash.batchStart') }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </transition>
-        </div>
+    <template v-else>
+      <AccountTable
+        v-if="view === 'table'"
+        :rows="pageRows"
+        :selected="selectedEmails"
+        :refreshing="refreshingTokens"
+        :toggling="togglingDisabled"
+        :provisioning="provisioningFingerprints"
+        :page-all-selected="pageAllSelected"
+        :page-some-selected="pageSomeSelected"
+        @toggle-select="toggleSelect"
+        @toggle-page="togglePageSelection"
+        @edit-proxy="openEditProxy"
+        @refresh="refreshToken"
+        @delete="deleteToken"
+        @detail="openDetail"
+        @toggle-disabled="toggleAccountDisabled"
+        @provision-fingerprint="provisionFingerprint"
+      />
+      <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <AccountCard
+          v-for="row in pageRows"
+          :key="row.email"
+          :row="row"
+          :selected="isSelected(row.email)"
+          :refreshing="refreshingTokens.includes(row.email)"
+          :toggling="togglingDisabled.includes(row.email)"
+          :provisioning="provisioningFingerprints.includes(row.email)"
+          @toggle-select="toggleSelect"
+          @edit-proxy="openEditProxy"
+          @refresh="refreshToken"
+          @delete="deleteToken"
+          @detail="openDetail"
+          @toggle-disabled="toggleAccountDisabled"
+          @provision-fingerprint="provisionFingerprint"
+        />
       </div>
-    </div>
 
-    <!-- 修改代理模态框 -->
-    <div v-if="showEditProxyModal"
-         class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
-         @click.self="closeEditProxyModal">
-      <div class="relative bg-white/90 backdrop-blur-lg rounded-2xl p-6 w-11/12 max-w-md transform transition-all duration-300 scale-100 opacity-100">
-        <h2 class="text-xl font-bold mb-2">{{ t('dash.editProxyTitle') }}</h2>
-        <p class="text-sm text-gray-600 mb-4">{{ t('dash.editProxyHint') }}</p>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700">Email</label>
-            <div class="mt-1 px-4 py-2 rounded-xl bg-gray-100 text-gray-700">{{ editProxy.email }}</div>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700">{{ t('dash.proxyLabel') }}</label>
-            <input v-model="editProxy.proxy" type="text" :placeholder="t('dash.proxyPlaceholder')"
-                   :disabled="isSavingProxy"
-                   :class="[
-                     'mt-1 block w-full rounded-xl bg-white/50 shadow-sm transition-all duration-300 h-12 text-base px-4 disabled:opacity-70',
-                     editProxyValid
-                       ? 'border-gray-300 focus:border-indigo-500 focus:ring-indigo-500'
-                       : 'border-red-400 focus:border-red-500 focus:ring-red-500'
-                   ]">
-            <p v-if="!editProxyValid" class="mt-1 text-sm text-red-600">{{ t('msg.proxyInvalid') }}</p>
-          </div>
-          <div class="flex justify-end space-x-3 pt-2">
-            <button @click="closeEditProxyModal"
-                    :disabled="isSavingProxy"
-                    class="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 transition-all duration-300 disabled:opacity-50">
-              {{ t('dash.cancel') }}
-            </button>
-            <button @click="clearProxy"
-                    :disabled="isSavingProxy"
-                    class="px-4 py-2 rounded-xl bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-all duration-300 disabled:opacity-50">
-              {{ t('dash.clearProxy') }}
-            </button>
-            <button @click="saveProxy"
-                    :disabled="isSavingProxy || !editProxyValid"
-                    class="px-4 py-2 rounded-xl bg-black text-white hover:bg-white hover:text-black border border-black transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
-              {{ t('dash.save') }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+      <AccountPagination
+        :page="currentPage"
+        :page-size="pageSize"
+        :total="filteredAccounts.length"
+        :total-pages="totalPages"
+        @update:page="changePage"
+        @update:page-size="changePageSize"
+      />
+    </template>
 
-    <!-- Toast 通知 -->
-    <div v-if="toast.show"
-         :class="[
-           'fixed top-4 right-4 z-50 px-6 py-4 rounded-xl shadow-lg transform transition-all duration-300 max-w-md',
-           toast.type === 'success' ? 'bg-emerald-500 text-white' :
-           toast.type === 'warning' ? 'bg-amber-500 text-white' : 'bg-red-500 text-white'
-         ]">
-      <div class="flex items-center space-x-2">
-        <svg v-if="toast.type === 'success'" class="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-        </svg>
-        <svg v-else-if="toast.type === 'warning'" class="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-          <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
-        </svg>
-        <svg v-else class="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
-        </svg>
-        <span class="whitespace-pre-line">{{ toast.message }}</span>
-      </div>
-    </div>
+    <AddAccountModal :open="showAddModal" @close="showAddModal = false" @saved="reloadAll" />
+    <EditProxyModal
+      :open="showProxyModal"
+      :email="proxyTarget.email"
+      :proxy="proxyTarget.proxy"
+      @close="showProxyModal = false"
+      @saved="reloadAll"
+    />
+    <AccountDetailModal
+      :open="showDetailModal"
+      :row="detailRow"
+      :toggling="detailRow ? togglingDisabled.includes(detailRow.email) : false"
+      :provisioning="detailRow ? provisioningFingerprints.includes(detailRow.email) : false"
+      @close="showDetailModal = false"
+      @toggle-disabled="toggleAccountDisabled"
+      @provision-fingerprint="provisionFingerprint"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import axios from 'axios'
-import LangSwitcher from '../components/LangSwitcher.vue'
-import { formatCompact as _formatCompact } from '../utils/format.js'
+import Icon from '../components/ui/Icon.vue'
+import AccountToolbar from '../components/accounts/AccountToolbar.vue'
+import AccountTable from '../components/accounts/AccountTable.vue'
+import AccountCard from '../components/accounts/AccountCard.vue'
+import AccountPagination from '../components/accounts/AccountPagination.vue'
+import AddAccountModal from '../components/accounts/AddAccountModal.vue'
+import EditProxyModal from '../components/accounts/EditProxyModal.vue'
+import AccountDetailModal from '../components/accounts/AccountDetailModal.vue'
+import { confirm, toast } from '../ui/feedback.js'
+import {
+  DEFAULT_STATS,
+  REFRESH_THRESHOLD_HOURS,
+  buildCliTooltip,
+  buildStatusTooltip,
+  formatCountdown,
+  getAuthHeaders,
+  needsFingerprint,
+  usageTotal
+} from '../components/accounts/shared.js'
 
 const { t } = useI18n()
 
-const tokens = ref([])
-const showAddModal = ref(false)
-const addMode = ref('single')
-const newAccount = ref({
-  email: '',
-  password: '',
-  proxy: ''
-})
-const showEditProxyModal = ref(false)
-const editProxy = ref({ email: '', proxy: '' })
-const isSavingProxy = ref(false)
+const VIEW_KEY = 'accounts.view'
+const PAGE_SIZE_KEY = 'accounts.pageSize'
+const PAGE_SIZES = [10, 20, 50, 100, 200]
 
-// 与后端 src/utils/proxy-helper.js#PROXY_URL_REGEX 保持一致
-const PROXY_URL_REGEX = /^(https?|socks5h?):\/\/[^\s]+$/i
-const isValidProxy = (value) => {
-  if (!value) return true
-  const trimmed = String(value).trim()
-  if (!trimmed) return true
-  return PROXY_URL_REGEX.test(trimmed)
-}
-const newAccountProxyValid = computed(() => isValidProxy(newAccount.value.proxy))
-const editProxyValid = computed(() => isValidProxy(editProxy.value.proxy))
-
-const batchAccounts = ref('')
-const isBatchAdding = ref(false)
-const batchTask = ref(null)
-const batchTaskPollTimer = ref(null)
-const batchTaskNotified = ref(false)
-
-// 分页相关
-const displayedTokens = ref([])
-const currentPage = ref(1)
-const pageSize = ref(10)
-const totalItems = ref(0)
-const totalPages = computed(() => Math.max(1, Math.ceil(totalItems.value / pageSize.value)))
+// ---------- 列表数据 ----------
+// 一次拉全量：搜索/状态筛选/排序/跨页全选都需要看到整个账号池，
+// 分页改在前端做（接口仍是同一个 GET /api/getAllAccounts，只是把 pageSize 取满）。
+const accounts = ref([])
+const totalAccounts = ref(0)
 const isLoading = ref(false)
 
-// 多选相关
-const selectedTokens = ref([])
-const selectAll = ref(false)
-const showDeleteAllConfirm = ref(false)
+// ---------- 查询条件 ----------
+const search = ref('')
+const statusFilter = ref('all')
+const sortKey = ref('expiresAsc')
 
-// 刷新相关
-// 一键刷新只处理临期令牌；阈值同时用于请求和提示文案，避免两处不一致
-const REFRESH_THRESHOLD_HOURS = 24
+// 视图偏好与每页条数记忆在 localStorage；首次进入按屏宽选默认视图
+const storedView = localStorage.getItem(VIEW_KEY)
+const view = ref(storedView === 'table' || storedView === 'cards'
+  ? storedView
+  : (window.innerWidth < 768 ? 'cards' : 'table'))
+const storedPageSize = Number(localStorage.getItem(PAGE_SIZE_KEY))
+const pageSize = ref(PAGE_SIZES.includes(storedPageSize) ? storedPageSize : 10)
+const currentPage = ref(1)
+
+// ---------- 多选 ----------
+// 跨页保持选中：翻页不会清空选择，方便批量删除
+const selectedEmails = ref([])
+
+// ---------- 刷新状态 ----------
 const isRefreshingAll = ref(false)
 const isForceRefreshingAll = ref(false)
 const refreshingTokens = ref([])
+// 正在切换启用/禁用状态的邮箱：开关进入 busy 态，避免连点
+const togglingDisabled = ref([])
+// 正在生成浏览器会话的邮箱：行内按钮、卡片与详情面板共用同一个 pending 集合
+const provisioningFingerprints = ref([])
+// 「一键补全会话」进行中 + 串行进度（done/total 直接显示在工具栏按钮上）
+const isProvisioningAll = ref(false)
+const provisionProgress = ref({ done: 0, total: 0 })
 
-// Per-account stats (Qwen2API-3wg.2)
+// ---------- 账号状态 / 用量 ----------
 const accountStats = ref({})
-const statsInterval = ref(null)
 const cliQuotaLimit = ref(2000)
-const DEFAULT_STATS = Object.freeze({
-  chat: { input: 0, output: 0 },
-  cli: { calls: 0, input: 0, output: 0 }
-})
-
-const getAccountStats = (email) => accountStats.value[email]?.stats || DEFAULT_STATS
-const getCliRequestNumber = (email) => accountStats.value[email]?.cliRequestNumber || 0
-const getCliQuotaLimit = (email) => {
-  const perAccountLimit = accountStats.value[email]?.cliQuotaLimit
-  if (typeof perAccountLimit === 'number') return perAccountLimit
-  return cliQuotaLimit.value
-}
-const getCliProgressPct = (email) => {
-  const limit = getCliQuotaLimit(email)
-  if (limit <= 0) return 0
-  return Math.min(100, getCliRequestNumber(email) / limit * 100)
-}
-const getCliProgressColor = (email) => {
-  const pct = getCliProgressPct(email)
-  if (pct >= 80) return 'bg-red-500'
-  if (pct >= 50) return 'bg-amber-500'
-  return 'bg-emerald-500'
-}
-
-// Compact number formatting (Qwen2API-j7x): 415575 → '415к', 1500 → '1.5к', 1500000 → '1.5M'.
-// Implementation moved to ../utils/format.js (shared with /statistics).
-const formatCompact = (n) => _formatCompact(n, { unitK: t('dash.acct.unitK'), unitM: t('dash.acct.unitM') })
-
-// CLI accordion (Qwen2API-ao2): свёрнут по умолчанию, состояние общее для всех карточек в localStorage.
-const cliExpanded = ref(localStorage.getItem('cliExpanded') === '1')
-const toggleCliExpanded = () => {
-  cliExpanded.value = !cliExpanded.value
-  localStorage.setItem('cliExpanded', cliExpanded.value ? '1' : '0')
-}
-
-// Per-account health indicator (Qwen2API-3wg.3, split in Qwen2API-jev).
-// Only account health lives here — CLI availability is a separate axis (status.cli)
-// shown in the CLI row, so a disabled CLI can no longer hide a cooldown.
-const STATUS_EMOJI = Object.freeze({
-  active: '🟢',
-  warn: '🟡',
-  cooldown: '🔴',
-  token_expiring: '🪫'
-})
-
-// CLI counters make no sense for these states — show a short label instead of 0 / quota.
-const CLI_INACTIVE_LABELS = Object.freeze({
-  unsupported: 'dash.acct.cliUnavailableShort',
-  disabled: 'dash.acct.cliDisabledShort'
-})
 const nowTick = ref(Date.now())
+let statsInterval = null
 let tickInterval = null
-// Map<email, cooldownEndsAt> — refetch suppression per-account.
-// Single global flag would block refetch for other accounts after first expiry.
+// Map<email, cooldownEndsAt>：冷却到期后每账号只补拉一次，避免全局标志互相阻塞
 const cooldownRefetched = new Map()
 
+// ---------- 弹窗 ----------
+const showAddModal = ref(false)
+const showProxyModal = ref(false)
+const proxyTarget = ref({ email: '', proxy: '' })
+// 详情面板按邮箱打开：行数据由 accounts/accountStats 派生，避免持有过期快照
+const showDetailModal = ref(false)
+const detailEmail = ref('')
+
+const errorText = (error) => error?.response?.data?.error || error?.message || ''
+
 const getStatusKind = (email) => accountStats.value[email]?.status?.kind || 'active'
-const getStatusEmoji = (email) => STATUS_EMOJI[getStatusKind(email)] || STATUS_EMOJI.active
-const getCliState = (email) => accountStats.value[email]?.status?.cli || 'available'
-const isCliInactive = (email) => Boolean(CLI_INACTIVE_LABELS[getCliState(email)])
-const getCliInactiveLabel = (email) => t(CLI_INACTIVE_LABELS[getCliState(email)])
-const isOnCooldown = (email) => {
-  const s = accountStats.value[email]?.status
-  return s?.kind === 'cooldown' && typeof s?.cooldownEndsAt === 'number'
+
+// ---------- 筛选 / 排序 / 分页 ----------
+const hasFilters = computed(() => Boolean(search.value.trim()) || statusFilter.value !== 'all')
+
+const filteredAccounts = computed(() => {
+  const keyword = search.value.trim().toLowerCase()
+  return accounts.value.filter((account) => {
+    if (keyword && !account.email.toLowerCase().includes(keyword)) return false
+    if (statusFilter.value === 'all') return true
+    // 「已禁用」是独立分组：禁用账号只出现在「全部」和「已禁用」里，
+    // 不会落进「可用 / 冷却 / 异常」，避免把一个手动移出轮换的账号误读成故障。
+    if (statusFilter.value === 'disabled') return account.disabled === true
+    if (account.disabled) return false
+    const kind = getStatusKind(account.email)
+    // 「可用」包含令牌临期：两者都还能正常发请求，只是后者需要尽快刷新
+    if (statusFilter.value === 'active') return kind === 'active' || kind === 'token_expiring'
+    if (statusFilter.value === 'expiring') return kind === 'token_expiring'
+    return kind === statusFilter.value
+  })
+})
+
+const sortedAccounts = computed(() => {
+  const list = [...filteredAccounts.value]
+  const usage = (email) => usageTotal(accountStats.value[email]?.stats)
+  const comparators = {
+    emailAsc: (a, b) => a.email.localeCompare(b.email),
+    emailDesc: (a, b) => b.email.localeCompare(a.email),
+    expiresAsc: (a, b) => (Number(a.expires) || 0) - (Number(b.expires) || 0),
+    expiresDesc: (a, b) => (Number(b.expires) || 0) - (Number(a.expires) || 0),
+    usageDesc: (a, b) => usage(b.email) - usage(a.email),
+    usageAsc: (a, b) => usage(a.email) - usage(b.email)
+  }
+  return list.sort(comparators[sortKey.value] || comparators.expiresAsc)
+})
+
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredAccounts.value.length / pageSize.value)))
+
+// 列表行 → 展示模型：状态/用量/倒计时/禁用标记，1s tick 驱动倒计时
+const enrichAccount = (account) => {
+  const entry = accountStats.value[account.email]
+  const status = entry?.status || {}
+  const kind = status.kind || 'active'
+  const stats = entry?.stats || DEFAULT_STATS
+  const disabled = account.disabled === true
+  const cooldownEndsAt = status.cooldownEndsAt
+  return {
+    ...account,
+    disabled,
+    // 可用性字段原样透传；后端未就绪时按「没有指纹」保守处理，
+    // 宁可显示「缺会话」也不要让不可用账号看起来可用。
+    hasFingerprint: account.hasFingerprint === true,
+    fingerprintAt: account.fingerprintAt || null,
+    usable: account.usable === true,
+    unavailableCode: account.unavailableCode || null,
+    stats,
+    cliRequestNumber: entry?.cliRequestNumber || 0,
+    cliQuotaLimit: typeof entry?.cliQuotaLimit === 'number' ? entry.cliQuotaLimit : cliQuotaLimit.value,
+    // 已禁用优先于健康状态：移出轮换后冷却/异常已无意义，徽章统一显示「已禁用」
+    statusKind: disabled ? 'disabled' : kind,
+    cliState: status.cli || 'available',
+    countdown: !disabled && kind === 'cooldown' && typeof cooldownEndsAt === 'number'
+      ? formatCountdown(cooldownEndsAt - nowTick.value)
+      : '',
+    statusTooltip: disabled ? t('accounts.statusTooltipDisabled') : buildStatusTooltip(status, nowTick.value, t),
+    cliTooltip: buildCliTooltip(status.cli || 'available', t)
+  }
 }
 
-const formatAgo = (ms) => {
-  const sec = Math.max(0, Math.floor(ms / 1000))
-  if (sec < 60) return `${sec} ${t('dash.acct.status.unitSec')}`
-  return `${Math.floor(sec / 60)} ${t('dash.acct.status.unitMin')}`
-}
+const pageRows = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return sortedAccounts.value.slice(start, start + pageSize.value).map(enrichAccount)
+})
 
-const formatCountdown = (ms) => {
-  const sec = Math.max(0, Math.floor(ms / 1000))
-  const mm = String(Math.floor(sec / 60)).padStart(2, '0')
-  const ss = String(sec % 60).padStart(2, '0')
-  return `${mm}:${ss}`
-}
+// 详情面板的行：始终从最新 accounts 派生，切换启用/禁用后立刻反映到面板
+const detailRow = computed(() => {
+  if (!detailEmail.value) return null
+  const account = accounts.value.find((item) => item.email === detailEmail.value)
+  return account ? enrichAccount(account) : null
+})
 
-const getCountdown = (email) => {
-  const s = accountStats.value[email]?.status
-  if (s?.kind !== 'cooldown' || typeof s?.cooldownEndsAt !== 'number') return ''
-  return formatCountdown(s.cooldownEndsAt - nowTick.value)
-}
+// 缺浏览器会话且未禁用：工具栏「一键补全会话」只处理这批账号
+const fingerprintQueue = computed(() => accounts.value.filter((account) => needsFingerprint(account)))
 
-const getStatusTooltip = (email) => {
-  const s = accountStats.value[email]?.status
-  const kind = s?.kind || 'active'
-  if (kind === 'cooldown' && typeof s?.cooldownEndsAt === 'number') {
-    return t('dash.acct.status.cooldown', { until: formatCountdown(s.cooldownEndsAt - nowTick.value) })
-  }
-  if (kind === 'warn') {
-    const ago = typeof s?.lastErrorAt === 'number' ? formatAgo(nowTick.value - s.lastErrorAt) : ''
-    if (s?.lastErrorCode !== null && s?.lastErrorCode !== undefined && s?.lastErrorCode !== '') {
-      return t('dash.acct.status.warn', { code: s.lastErrorCode, ago })
-    }
-    return t('dash.acct.status.warnNoCode', { ago })
-  }
-  if (kind === 'token_expiring') {
-    return t('dash.acct.status.tokenExpiring')
-  }
-  return t('dash.acct.status.active')
-}
+const isSelected = (email) => selectedEmails.value.includes(email)
+const allFilteredSelected = computed(() => (
+  filteredAccounts.value.length > 0 &&
+  filteredAccounts.value.every((account) => isSelected(account.email))
+))
+const pageAllSelected = computed(() => (
+  pageRows.value.length > 0 && pageRows.value.every((row) => isSelected(row.email))
+))
+const pageSomeSelected = computed(() => (
+  !pageAllSelected.value && pageRows.value.some((row) => isSelected(row.email))
+))
 
-// CLI row hint — independent of the health badge above.
-const getCliTooltip = (email) => {
-  const cli = getCliState(email)
-  if (cli === 'unsupported') {
-    return t('dash.acct.status.cliUnsupported')
-  }
-  if (cli === 'disabled') {
-    return t('dash.acct.status.cliDisabled')
-  }
-  if (cli === 'pending') {
-    return t('dash.acct.status.cliPending')
-  }
-  return ''
-}
+// 分页越界自动回到最后一页（删除/筛选后常见）
+watch([filteredAccounts, pageSize], () => {
+  if (currentPage.value > totalPages.value) currentPage.value = totalPages.value
+})
 
+// 查询条件变化回到第 1 页
+watch([search, statusFilter, sortKey], () => {
+  currentPage.value = 1
+})
+
+watch(view, (value) => localStorage.setItem(VIEW_KEY, value))
+
+// 列表刷新后清掉已经不存在的选中项
+watch(accounts, () => {
+  const existing = new Set(accounts.value.map((account) => account.email))
+  selectedEmails.value = selectedEmails.value.filter((email) => existing.has(email))
+})
+
+// ---------- 数据加载 ----------
 const fetchAccountStats = async () => {
   try {
-    const res = await axios.get('/api/accountStats', {
-      headers: getAuthHeaders()
-    })
+    const res = await axios.get('/api/accountStats', { headers: getAuthHeaders() })
     const map = {}
     for (const entry of res.data?.accounts || []) {
       if (entry?.email) map[entry.email] = entry
@@ -748,11 +380,10 @@ const fetchAccountStats = async () => {
     if (typeof res.data?.cliQuotaLimit === 'number') {
       cliQuotaLimit.value = res.data.cliQuotaLimit
     }
-    // Drop suppression entries where account is no longer in cooldown OR
-    // cooldownEndsAt changed (new cooldown cycle → must allow refetch again).
+    // 冷却结束或进入新一轮冷却时，解除该账号的补拉抑制
     for (const [email, cachedEndsAt] of cooldownRefetched) {
-      const s = map[email]?.status
-      if (s?.kind !== 'cooldown' || s?.cooldownEndsAt !== cachedEndsAt) {
+      const status = map[email]?.status
+      if (status?.kind !== 'cooldown' || status?.cooldownEndsAt !== cachedEndsAt) {
         cooldownRefetched.delete(email)
       }
     }
@@ -761,425 +392,203 @@ const fetchAccountStats = async () => {
   }
 }
 
-// Auto-refetch when any account's cooldown expires (per-account suppression via Map).
-// Marks every expired-but-not-yet-refetched account in the suppression Map, then
-// fires a single fetchAccountStats (one call refreshes status for all accounts).
-watch([nowTick, accountStats], () => {
-  const stats = accountStats.value
-  let shouldRefetch = false
-  for (const email of Object.keys(stats)) {
-    const s = stats[email]?.status
-    if (s?.kind !== 'cooldown' || typeof s?.cooldownEndsAt !== 'number') continue
-    if (nowTick.value >= s.cooldownEndsAt && cooldownRefetched.get(email) !== s.cooldownEndsAt) {
-      cooldownRefetched.set(email, s.cooldownEndsAt)
-      shouldRefetch = true
-    }
-  }
-  if (shouldRefetch) fetchAccountStats()
-})
-
-// Toast 通知
-const toast = ref({
-  show: false,
-  message: '',
-  type: 'success'
-})
-const batchTaskStatusText = computed(() => {
-  const status = batchTask.value?.status
-  if (status === 'completed') return t('dash.statusCompleted')
-  if (status === 'failed') return t('dash.statusFailed')
-  if (status === 'running') return t('dash.statusRunning')
-  if (status === 'pending') return t('dash.statusPending')
-  return t('dash.statusNotStarted')
-})
-const batchTaskStatusClass = computed(() => {
-  const status = batchTask.value?.status
-  if (status === 'completed') return 'bg-emerald-100 text-emerald-700'
-  if (status === 'failed') return 'bg-rose-100 text-rose-700'
-  if (status === 'running') return 'bg-sky-100 text-sky-700'
-  if (status === 'pending') return 'bg-amber-100 text-amber-700'
-  return 'bg-slate-100 text-slate-700'
-})
-const batchTaskProgressStyle = computed(() => ({
-  width: `${Math.max(0, Math.min(100, Number(batchTask.value?.progress || 0)))}%`
-}))
-
-const getAuthHeaders = () => ({
-  'Authorization': localStorage.getItem('apiKey') || ''
-})
-
-const clearBatchTaskPolling = () => {
-  if (batchTaskPollTimer.value) {
-    clearTimeout(batchTaskPollTimer.value)
-    batchTaskPollTimer.value = null
-  }
-}
-
-const resetBatchTaskState = (clearInput = false) => {
-  clearBatchTaskPolling()
-  batchTask.value = null
-  batchTaskNotified.value = false
-  isBatchAdding.value = false
-
-  if (clearInput) {
-    batchAccounts.value = ''
-  }
-}
-
-const buildBatchTaskMessage = (task) => {
-  let message = t('msg.batchComplete', { n: task.success })
-  if (task.failed > 0) message += ', ' + t('msg.batchFailed', { n: task.failed })
-  if (task.skipped > 0) message += ', ' + t('msg.batchSkipped', { n: task.skipped })
-  if (task.invalid > 0) message += ', ' + t('msg.batchInvalid', { n: task.invalid })
-  if (task.failedEmails?.length > 0) {
-    message += '\n' + t('msg.failedAccounts') + ' ' + task.failedEmails.slice(0, 10).join(', ')
-  }
-  return message
-}
-
-const finalizeBatchTask = async (task) => {
-  clearBatchTaskPolling()
-  batchTask.value = task
-  isBatchAdding.value = false
-
-  if (task.success > 0) {
-    await getTokens()
-  }
-
-  if (!batchTaskNotified.value) {
-    batchTaskNotified.value = true
-    showToast(
-      buildBatchTaskMessage(task),
-      task.failed > 0 || task.invalid > 0 ? 'warning' : 'success'
-    )
-  }
-}
-
-const pollBatchTask = async (taskId) => {
-  clearBatchTaskPolling()
-
-  try {
-    const res = await axios.get(`/api/batchTasks/${taskId}`, {
-      headers: getAuthHeaders()
-    })
-
-    batchTask.value = res.data
-
-    if (res.data.status === 'completed' || res.data.status === 'failed') {
-      await finalizeBatchTask(res.data)
-      return
-    }
-
-    batchTaskPollTimer.value = setTimeout(() => {
-      pollBatchTask(taskId)
-    }, 800)
-  } catch (error) {
-    console.error('pollBatchTask error:', error)
-
-    if (batchTask.value) {
-      batchTask.value = {
-        ...batchTask.value,
-        message: t('msg.progressRetry')
-      }
-    }
-
-    batchTaskPollTimer.value = setTimeout(() => {
-      pollBatchTask(taskId)
-    }, 1500)
-  }
-}
-
-const closeAddModal = () => {
-  showAddModal.value = false
-
-  if (!isBatchAdding.value && addMode.value === 'batch' && batchTask.value?.status === 'completed') {
-    resetBatchTaskState(batchTask.value.failed === 0 && batchTask.value.invalid === 0)
-  }
-}
-
-const isSelected = (email) => {
-  return selectedTokens.value.includes(email)
-}
-
-const toggleSelect = (email) => {
-  const index = selectedTokens.value.indexOf(email)
-  if (index === -1) {
-    selectedTokens.value.push(email)
-  } else {
-    selectedTokens.value.splice(index, 1)
-  }
-  selectAll.value = selectedTokens.value.length === displayedTokens.value.length
-}
-
-const toggleSelectAll = () => {
-  if (selectAll.value) {
-    selectedTokens.value = displayedTokens.value.map(token => token.email)
-  } else {
-    selectedTokens.value = []
-  }
-}
-
-const deleteSelected = async () => {
-  if (selectedTokens.value.length === 0) return
-
-  if (!confirm(t('msg.deleteConfirm', { n: selectedTokens.value.length }))) return
-
-  try {
-    const deletePromises = selectedTokens.value.map(email =>
-      axios.delete('/api/deleteAccount', {
-        data: { email },
-        headers: getAuthHeaders()
-      })
-    )
-
-    await Promise.all(deletePromises)
-    await getTokens()
-    selectedTokens.value = []
-    selectAll.value = false
-    showToast(t('msg.deleteSuccess'))
-  } catch (error) {
-    console.error('deleteSelected error:', error)
-    showToast(t('msg.deleteFailed') + error.message, 'error')
-  }
-}
-
-const deleteAllAccounts = async () => {
+const getAccounts = async () => {
+  isLoading.value = true
   try {
     const res = await axios.get('/api/getAllAccounts', {
       params: { page: 1, pageSize: 10000 },
       headers: getAuthHeaders()
     })
-    const allAccounts = res.data.data
-
-    const deletePromises = allAccounts.map(token =>
-      axios.delete('/api/deleteAccount', {
-        data: { email: token.email },
-        headers: getAuthHeaders()
-      })
-    )
-
-    await Promise.all(deletePromises)
-    showDeleteAllConfirm.value = false
-    currentPage.value = 1
-    await getTokens()
-    selectedTokens.value = []
-    selectAll.value = false
-    showToast(t('msg.allDeleted'))
+    accounts.value = res.data?.data || []
+    totalAccounts.value = typeof res.data?.total === 'number' ? res.data.total : accounts.value.length
   } catch (error) {
-    console.error('deleteAllAccounts error:', error)
-    showToast(t('msg.allDeleteFailed') + error.message, 'error')
-  }
-}
-
-const changePage = async (page) => {
-  if (page >= 1 && page <= totalPages.value) {
-    currentPage.value = page
-    selectedTokens.value = []
-    selectAll.value = false
-    await getTokens()
-  }
-}
-
-const changePageSize = async () => {
-  currentPage.value = 1
-  selectedTokens.value = []
-  selectAll.value = false
-  await getTokens()
-}
-
-const showToast = (message, type = 'success') => {
-  toast.value.message = message
-  toast.value.type = type
-  toast.value.show = true
-
-  setTimeout(() => {
-    toast.value.show = false
-  }, 3000)
-}
-
-const copyToClipboard = async (text) => {
-  try {
-    await navigator.clipboard.writeText(text)
-    showToast(t('dash.copiedToClipboard'))
-  } catch (err) {
-    console.error('copyToClipboard error:', err)
-    showToast(t('msg.copyFailed'), 'error')
-  }
-}
-
-const getTokens = async () => {
-  isLoading.value = true
-  try {
-    const res = await axios.get('/api/getAllAccounts', {
-      params: {
-        page: currentPage.value,
-        pageSize: pageSize.value
-      },
-      headers: getAuthHeaders()
-    })
-
-    displayedTokens.value = res.data.data
-    totalItems.value = res.data.total
-
-    if (currentPage.value > totalPages.value && totalPages.value > 0) {
-      currentPage.value = 1
-      await getTokens()
-      return
-    }
-
-    selectedTokens.value = []
-    selectAll.value = false
-
-  } catch (error) {
-    console.error('getTokens error:', error)
-    showToast(t('msg.fetchFailed') + error.message, 'error')
+    console.error('getAccounts error:', error)
+    toast.error(t('accounts.toastFetchFailed', { error: errorText(error) }))
   } finally {
     isLoading.value = false
   }
 }
 
-const addToken = async () => {
-  try {
-    const payload = {
-      email: newAccount.value.email,
-      password: newAccount.value.password,
-      proxy: newAccount.value.proxy?.trim() || null
-    }
-    await axios.post('/api/setAccount', payload, {
-      headers: getAuthHeaders()
-    })
-    closeAddModal()
-    newAccount.value = { email: '', password: '', proxy: '' }
-    await getTokens()
-    showToast(t('msg.addSuccess'))
-  } catch (error) {
-    console.error('addToken error:', error)
-    showToast(t('msg.addFailed') + error.message, 'error')
+const reloadAll = async () => {
+  await getAccounts()
+  await fetchAccountStats()
+}
+
+// ---------- 多选操作 ----------
+const toggleSelect = (email) => {
+  if (isSelected(email)) selectedEmails.value = selectedEmails.value.filter((item) => item !== email)
+  else selectedEmails.value = [...selectedEmails.value, email]
+}
+
+// 表头复选框：只作用于当前页
+const togglePageSelection = () => {
+  const pageEmails = pageRows.value.map((row) => row.email)
+  if (pageAllSelected.value) {
+    selectedEmails.value = selectedEmails.value.filter((email) => !pageEmails.includes(email))
+  } else {
+    selectedEmails.value = [...new Set([...selectedEmails.value, ...pageEmails])]
   }
 }
 
-const openEditProxy = (token) => {
-  editProxy.value = { email: token.email, proxy: token.proxy || '' }
-  showEditProxyModal.value = true
-}
-
-const closeEditProxyModal = () => {
-  if (isSavingProxy.value) return
-  showEditProxyModal.value = false
-}
-
-const clearProxy = () => {
-  editProxy.value.proxy = ''
-}
-
-const saveProxy = async () => {
-  if (isSavingProxy.value) return
-  isSavingProxy.value = true
-  try {
-    await axios.post('/api/updateAccountProxy', {
-      email: editProxy.value.email,
-      proxy: editProxy.value.proxy.trim() || null
-    }, {
-      headers: getAuthHeaders()
-    })
-    showEditProxyModal.value = false
-    await getTokens()
-    showToast(t('msg.proxyUpdateSuccess'))
-  } catch (error) {
-    console.error('saveProxy error:', error)
-    showToast(t('msg.proxyUpdateFailed') + error.message, 'error')
-  } finally {
-    isSavingProxy.value = false
+// 工具栏复选框：跨页全选当前筛选结果
+const toggleAllFiltered = () => {
+  if (allFilteredSelected.value) {
+    selectedEmails.value = []
+  } else {
+    selectedEmails.value = filteredAccounts.value.map((account) => account.email)
   }
 }
 
-const addBatchTokens = async () => {
-  if (isBatchAdding.value) return
-  if (!batchAccounts.value.trim()) {
-    showToast(t('msg.enterAccounts'), 'error')
+const clearSelection = () => {
+  selectedEmails.value = []
+}
+
+const resetFilters = () => {
+  search.value = ''
+  statusFilter.value = 'all'
+}
+
+// ---------- 分页 ----------
+const changePage = (page) => {
+  if (page >= 1 && page <= totalPages.value) currentPage.value = page
+}
+
+const changePageSize = (size) => {
+  pageSize.value = size
+  currentPage.value = 1
+  localStorage.setItem(PAGE_SIZE_KEY, String(size))
+}
+
+// ---------- 删除 ----------
+const deleteSelected = async () => {
+  const emails = [...selectedEmails.value]
+  if (emails.length === 0) return
+
+  const ok = await confirm({
+    title: t('accounts.confirmDeleteSelectedTitle'),
+    message: t('accounts.confirmDeleteSelected', { n: emails.length }),
+    confirmText: t('common.delete'),
+    danger: true
+  })
+  if (!ok) return
+
+  try {
+    await Promise.all(emails.map((email) => axios.delete('/api/deleteAccount', {
+      data: { email },
+      headers: getAuthHeaders()
+    })))
+    clearSelection()
+    await reloadAll()
+    toast.success(t('accounts.toastDeleted', { n: emails.length }))
+  } catch (error) {
+    console.error('deleteSelected error:', error)
+    toast.error(t('accounts.toastDeleteFailed', { error: errorText(error) }))
+  }
+}
+
+const deleteAllAccounts = async () => {
+  const n = totalAccounts.value
+  if (n === 0) {
+    toast.warn(t('accounts.emptyTitle'))
     return
   }
 
-  batchTaskNotified.value = false
-  clearBatchTaskPolling()
-  isBatchAdding.value = true
+  const ok = await confirm({
+    title: t('accounts.confirmDeleteAllTitle'),
+    message: t('accounts.confirmDeleteAll', { n }),
+    confirmText: t('common.delete'),
+    danger: true
+  })
+  if (!ok) return
 
   try {
-    const res = await axios.post('/api/setAccounts', {
-      accounts: batchAccounts.value,
-      async: true
-    }, {
+    // 先取全量邮箱再逐个删除：与旧实现一致，避免删到一半列表已经变化
+    const res = await axios.get('/api/getAllAccounts', {
+      params: { page: 1, pageSize: 10000 },
       headers: getAuthHeaders()
     })
-
-    batchTask.value = res.data
-    addMode.value = 'batch'
-    showAddModal.value = true
-
-    if (res.data.status === 'completed' || res.data.status === 'failed') {
-      await finalizeBatchTask(res.data)
-      return
-    }
-
-    pollBatchTask(res.data.taskId)
+    const allEmails = (res.data?.data || []).map((item) => item.email)
+    await Promise.all(allEmails.map((email) => axios.delete('/api/deleteAccount', {
+      data: { email },
+      headers: getAuthHeaders()
+    })))
+    clearSelection()
+    currentPage.value = 1
+    await reloadAll()
+    toast.success(t('accounts.toastAllDeleted', { n: allEmails.length }))
   } catch (error) {
-    console.error('addBatchTokens error:', error)
-    showToast(t('msg.batchAddFailed') + error.message, 'error')
-    isBatchAdding.value = false
+    console.error('deleteAllAccounts error:', error)
+    toast.error(t('accounts.toastDeleteFailed', { error: errorText(error) }))
   }
 }
 
-const refreshToken = async (email) => {
-  if (refreshingTokens.value.includes(email)) return
-
-  refreshingTokens.value.push(email)
+const deleteToken = async (row) => {
+  const ok = await confirm({
+    title: t('accounts.confirmDeleteOneTitle'),
+    message: t('accounts.confirmDeleteOne', { email: row.email }),
+    confirmText: t('common.delete'),
+    danger: true
+  })
+  if (!ok) return
 
   try {
-    await axios.post('/api/refreshAccount', { email }, {
+    await axios.delete('/api/deleteAccount', {
+      data: { email: row.email },
       headers: getAuthHeaders()
     })
+    selectedEmails.value = selectedEmails.value.filter((email) => email !== row.email)
+    await reloadAll()
+    toast.success(t('accounts.toastDeleted', { n: 1 }))
+  } catch (error) {
+    console.error('deleteToken error:', error)
+    toast.error(t('accounts.toastDeleteFailed', { error: errorText(error) }))
+  }
+}
 
-    await getTokens()
-    showToast(t('msg.refreshSuccess', { email }))
+// ---------- 刷新 ----------
+const refreshToken = async (email) => {
+  if (refreshingTokens.value.includes(email)) return
+  refreshingTokens.value = [...refreshingTokens.value, email]
+  try {
+    await axios.post('/api/refreshAccount', { email }, { headers: getAuthHeaders() })
+    await reloadAll()
+    toast.success(t('accounts.toastRefreshSuccess', { email }))
   } catch (error) {
     console.error('refreshToken error:', error)
-    showToast(t('msg.refreshFailed') + error.message, 'error')
+    toast.error(t('accounts.toastRefreshFailed', { error: errorText(error) }))
   } finally {
-    const index = refreshingTokens.value.indexOf(email)
-    if (index > -1) {
-      refreshingTokens.value.splice(index, 1)
-    }
+    refreshingTokens.value = refreshingTokens.value.filter((item) => item !== email)
   }
 }
 
 const refreshAllAccounts = async () => {
   if (isRefreshingAll.value) return
-
-  if (!confirm(t('msg.refreshAllConfirm', { hours: REFRESH_THRESHOLD_HOURS }))) return
+  const ok = await confirm({
+    title: t('accounts.refreshAll'),
+    message: t('accounts.confirmRefreshAll', { hours: REFRESH_THRESHOLD_HOURS })
+  })
+  if (!ok) return
 
   isRefreshingAll.value = true
-
   try {
     const response = await axios.post('/api/refreshAllAccounts', {
       thresholdHours: REFRESH_THRESHOLD_HOURS
     }, {
       headers: getAuthHeaders()
     })
-
-    await getTokens()
+    await reloadAll()
     const { refreshedCount, expiringCount } = response.data
-    // 令牌有效期远长于阈值，多数时候没有临期账户；直接报「刷新了 0 个」会被当成按钮失效（#113）
+    // 令牌有效期远长于阈值，多数时候没有临期账号；直接报「刷新了 0 个」会被当成按钮失效
     if (expiringCount === 0) {
-      showToast(t('msg.refreshAllNone', { hours: REFRESH_THRESHOLD_HOURS }), 'warning')
+      toast.warn(t('accounts.toastRefreshAllNone', { hours: REFRESH_THRESHOLD_HOURS }))
+    } else if (refreshedCount < expiringCount) {
+      toast.warn(t('accounts.toastRefreshAllComplete', { n: refreshedCount, total: expiringCount }))
     } else {
-      showToast(
-        t('msg.refreshAllComplete', { n: refreshedCount, total: expiringCount }),
-        refreshedCount < expiringCount ? 'warning' : 'success'
-      )
+      toast.success(t('accounts.toastRefreshAllComplete', { n: refreshedCount, total: expiringCount }))
     }
   } catch (error) {
     console.error('refreshAllAccounts error:', error)
-    showToast(t('msg.refreshAllFailed') + error.message, 'error')
+    toast.error(t('accounts.toastRefreshAllFailed', { error: errorText(error) }))
   } finally {
     isRefreshingAll.value = false
   }
@@ -1187,63 +596,164 @@ const refreshAllAccounts = async () => {
 
 const forceRefreshAllAccounts = async () => {
   if (isForceRefreshingAll.value) return
-
-  if (!confirm(t('msg.forceRefreshAllConfirm'))) return
+  const ok = await confirm({
+    title: t('accounts.forceRefresh'),
+    message: t('accounts.confirmForceRefreshAll'),
+    confirmText: t('accounts.forceRefresh')
+  })
+  if (!ok) return
 
   isForceRefreshingAll.value = true
-
   try {
-    const response = await axios.post('/api/forceRefreshAllAccounts', {}, {
-      headers: getAuthHeaders()
-    })
-
-    await getTokens()
-    showToast(t('msg.forceRefreshAllComplete', { n: response.data.refreshedCount }))
+    const response = await axios.post('/api/forceRefreshAllAccounts', {}, { headers: getAuthHeaders() })
+    await reloadAll()
+    toast.success(t('accounts.toastForceRefreshComplete', { n: response.data.refreshedCount }))
   } catch (error) {
     console.error('forceRefreshAllAccounts error:', error)
-    showToast(t('msg.forceRefreshAllFailed') + error.message, 'error')
+    toast.error(t('accounts.toastForceRefreshFailed', { error: errorText(error) }))
   } finally {
     isForceRefreshingAll.value = false
   }
 }
 
-const deleteToken = async (email) => {
-  if (!confirm(t('msg.deleteAccountConfirm'))) return
+// ---------- 浏览器会话（baxia 指纹） ----------
+// 服务端会拉起无头 Chrome，用账号邮箱密码登录 chat.qwen.ai 再采集会话，最长约 60 秒；
+// 默认 axios 超时会把它误判成失败，这里单独放大到 90 秒。
+const PROVISION_TIMEOUT_MS = 90000
 
+// 单个账号的生成请求（不发 toast，供单点与「一键补全」共用，避免批量时刷屏）
+const runProvision = async (email) => {
+  if (provisioningFingerprints.value.includes(email)) return { ok: false, error: '' }
+  provisioningFingerprints.value = [...provisioningFingerprints.value, email]
   try {
-    await axios.delete('/api/deleteAccount', {
-      data: { email },
-      headers: getAuthHeaders()
+    await axios.post('/api/provisionFingerprint', { email }, {
+      headers: getAuthHeaders(),
+      timeout: PROVISION_TIMEOUT_MS
     })
-    await getTokens()
-    showToast(t('msg.deleteAccountSuccess'))
+    return { ok: true, error: '' }
   } catch (error) {
-    console.error('deleteToken error:', error)
-    showToast(t('msg.deleteAccountFailed') + error.message, 'error')
+    console.error('provisionFingerprint error:', error)
+    return { ok: false, error: errorText(error) }
+  } finally {
+    provisioningFingerprints.value = provisioningFingerprints.value.filter((item) => item !== email)
   }
 }
 
-const exportAccounts = async () => {
+const provisionFingerprint = async (row) => {
+  const email = row?.email || row
+  if (!email || provisioningFingerprints.value.includes(email)) return false
+  const result = await runProvision(email)
+  if (result.ok) {
+    await getAccounts()
+    toast.success(t('accounts.toastProvisionSuccess', { email }))
+  } else if (result.error) {
+    toast.error(t('accounts.toastProvisionFailed', { email, error: result.error }))
+  }
+  return result.ok
+}
+
+// 一键补全：串行执行（每个会话都要起一次无头 Chrome，并发只会互相抢资源），工具栏显示进度
+const provisionAllFingerprints = async () => {
+  if (isProvisioningAll.value) return
+  // 先取快照：执行期间列表会被刷新，队列以点击那一刻为准
+  const targets = [...fingerprintQueue.value]
+  if (!targets.length) return
+
+  const ok = await confirm({
+    title: t('accounts.provisionAll', { n: targets.length }),
+    message: t('accounts.confirmProvisionAll', { n: targets.length })
+  })
+  if (!ok) return
+
+  isProvisioningAll.value = true
+  provisionProgress.value = { done: 0, total: targets.length }
+  let okCount = 0
   try {
-    const res = await axios.get('/api/getAllAccounts', {
-      params: { page: 1, pageSize: 10000 },
+    for (const account of targets) {
+      const result = await runProvision(account.email)
+      if (result.ok) {
+        okCount += 1
+        // 逐个刷新：徽章立刻从「缺会话」变「可用」，用户能看到进度
+        await getAccounts()
+      }
+      provisionProgress.value = { done: provisionProgress.value.done + 1, total: targets.length }
+    }
+    if (okCount === targets.length) {
+      toast.success(t('accounts.toastProvisionAllComplete', { n: okCount }))
+    } else {
+      toast.warn(t('accounts.toastProvisionAllPartial', { n: okCount, total: targets.length }))
+    }
+  } finally {
+    isProvisioningAll.value = false
+    provisionProgress.value = { done: 0, total: 0 }
+  }
+}
+
+// ---------- 代理 ----------
+const openEditProxy = (row) => {
+  proxyTarget.value = { email: row.email, proxy: row.proxy || '' }
+  showProxyModal.value = true
+}
+
+// ---------- 详情 ----------
+const openDetail = (row) => {
+  detailEmail.value = row.email
+  showDetailModal.value = true
+}
+
+// ---------- 启用 / 禁用 ----------
+// 禁用后账号移出轮换队列（账号、令牌、统计都保留，重新启用立刻可用）。
+// 乐观更新 + 失败回滚：开关点下去立刻有反馈，接口失败时把状态还原并 toast。
+const toggleAccountDisabled = async (row) => {
+  if (togglingDisabled.value.includes(row.email)) return
+  const target = accounts.value.find((item) => item.email === row.email)
+  if (!target) return
+
+  const previous = target.disabled === true
+  const next = !previous
+  togglingDisabled.value = [...togglingDisabled.value, row.email]
+  target.disabled = next
+
+  try {
+    await axios.post('/api/setAccountDisabled', {
+      email: row.email,
+      disabled: next
+    }, {
       headers: getAuthHeaders()
     })
-    const allAccounts = res.data.data
+    if (next) toast.success(t('accounts.toastAccountDisabled', { email: row.email }))
+    else toast.success(t('accounts.toastAccountEnabled', { email: row.email }))
+  } catch (error) {
+    console.error('toggleAccountDisabled error:', error)
+    target.disabled = previous
+    toast.error(t('accounts.toastToggleDisabledFailed', { error: errorText(error) }))
+  } finally {
+    togglingDisabled.value = togglingDisabled.value.filter((email) => email !== row.email)
+  }
+}
 
-    if (allAccounts.length === 0) {
-      showToast(t('msg.exportEmpty'), 'error')
+// ---------- 导出 ----------
+// 列表接口已不下发密码，导出必须走服务端 /exportAccounts（text/plain，附件下载）
+const exportAccounts = async () => {
+  try {
+    const res = await axios.get('/api/exportAccounts', {
+      headers: getAuthHeaders(),
+      responseType: 'blob'
+    })
+
+    const blob = res.data instanceof Blob
+      ? res.data
+      : new Blob([res.data ?? ''], { type: 'text/plain;charset=utf-8' })
+
+    if (blob.size === 0) {
+      toast.warn(t('accounts.toastExportEmpty'))
       return
     }
-
-    const content = allAccounts.map(token => `${token.email}:${token.password}`).join('\n')
-
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
 
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = 'qwen_accounts.txt'
+    link.download = 'qwen2api-accounts.txt'
     document.body.appendChild(link)
     link.click()
 
@@ -1252,26 +762,40 @@ const exportAccounts = async () => {
       URL.revokeObjectURL(url)
     }, 100)
 
-    showToast(t('msg.exportSuccess'))
+    toast.success(t('accounts.toastExportSuccess'))
   } catch (error) {
     console.error('exportAccounts error:', error)
-    showToast(t('msg.exportFailed') + error.message, 'error')
+    toast.error(t('accounts.toastExportFailed', { error: errorText(error) }))
   }
 }
 
+// 冷却到期后补拉一次状态（每账号一次，避免轮询风暴）
+watch([nowTick, accountStats], () => {
+  const stats = accountStats.value
+  let shouldRefetch = false
+  for (const email of Object.keys(stats)) {
+    const status = stats[email]?.status
+    if (status?.kind !== 'cooldown' || typeof status?.cooldownEndsAt !== 'number') continue
+    if (nowTick.value >= status.cooldownEndsAt && cooldownRefetched.get(email) !== status.cooldownEndsAt) {
+      cooldownRefetched.set(email, status.cooldownEndsAt)
+      shouldRefetch = true
+    }
+  }
+  if (shouldRefetch) fetchAccountStats()
+})
+
 onMounted(() => {
-  getTokens()
+  getAccounts()
   fetchAccountStats()
-  statsInterval.value = setInterval(fetchAccountStats, 30000)
-  // 1s tick drives countdown rerender and cooldown-expiry watcher.
+  statsInterval = setInterval(fetchAccountStats, 30000)
+  // 1s tick 驱动倒计时重绘与冷却到期判定
   tickInterval = setInterval(() => { nowTick.value = Date.now() }, 1000)
 })
 
 onBeforeUnmount(() => {
-  clearBatchTaskPolling()
-  if (statsInterval.value) {
-    clearInterval(statsInterval.value)
-    statsInterval.value = null
+  if (statsInterval) {
+    clearInterval(statsInterval)
+    statsInterval = null
   }
   if (tickInterval) {
     clearInterval(tickInterval)
@@ -1279,311 +803,3 @@ onBeforeUnmount(() => {
   }
 })
 </script>
-
-<style lang="css" scoped>
-@media (max-width: 640px) {
-  .container {
-    padding: 0;
-  }
-}
-
-.dashboard-scroll {
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.38) rgba(255, 255, 255, 0.08);
-}
-
-.modal-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.32) rgba(255, 255, 255, 0.06);
-}
-
-.dashboard-scroll::-webkit-scrollbar {
-  width: 8px;
-}
-
-.modal-scroll::-webkit-scrollbar {
-  width: 6px;
-}
-
-.dashboard-scroll::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
-}
-
-.modal-scroll::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 999px;
-}
-
-.dashboard-scroll::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.2));
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 2px 10px rgba(15, 23, 42, 0.12);
-  background-clip: padding-box;
-}
-
-.modal-scroll::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.18));
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-}
-
-.dashboard-scroll::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.56), rgba(255, 255, 255, 0.28));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 4px 14px rgba(15, 23, 42, 0.16);
-}
-
-.modal-scroll::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.24));
-}
-
-.dashboard-scroll::-webkit-scrollbar-thumb:active {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.34));
-}
-
-.dashboard-scroll::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-.fade-enter-active, .fade-leave-active {
-  transition: opacity 0.3s, transform 0.3s;
-}
-.fade-enter-from, .fade-leave-to {
-  opacity: 0;
-  transform: translateY(10px);
-}
-.fade-enter-to, .fade-leave-from {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.token-card {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.3));
-  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
-  transform: translateY(0);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.token-card:hover {
-  transform: translateY(-5px);
-}
-
-.scrollbar-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.scrollbar-hide::-webkit-scrollbar {
-  display: none;
-}
-
-@keyframes slideIn {
-  from {
-    transform: translateY(20px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-.token-card {
-  animation: slideIn 0.5s ease-out;
-  animation-fill-mode: both;
-}
-
-.token-card:nth-child(3n+1) { animation-delay: 0.1s; }
-.token-card:nth-child(3n+2) { animation-delay: 0.2s; }
-.token-card:nth-child(3n+3) { animation-delay: 0.3s; }
-
-.overflow-x-auto {
-  position: relative;
-  cursor: pointer;
-}
-
-.overflow-x-auto::after {
-  content: '';
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 24px;
-  background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.8));
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s;
-}
-
-.overflow-x-auto:hover::after {
-  opacity: 1;
-}
-
-/* 隐藏滚动条样式 */
-.scrollbar-hidden {
-  -ms-overflow-style: none;  /* IE and Edge */
-  scrollbar-width: none;  /* Firefox */
-}
-
-.scrollbar-hidden::-webkit-scrollbar {
-  display: none;  /* Chrome, Safari and Opera */
-}
-
-/* 自定义滚动条样式（备用） */
-.max-h-\[calc\(100vh-200px\)\]::-webkit-scrollbar {
-  width: 6px;
-}
-
-.max-h-\[calc\(100vh-200px\)\]::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.05);
-  border-radius: 8px;
-}
-
-.max-h-\[calc\(100vh-200px\)\]::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.1);
-  border-radius: 8px;
-}
-
-.max-h-\[calc\(100vh-200px\)\]::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(0, 0, 0, 0.2);
-}
-
-/* 自定义复选框样式 */
-.custom-checkbox .checkbox-icon {
-  position: relative;
-  overflow: hidden;
-}
-
-.custom-checkbox .checkbox-icon:before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: rgba(99, 102, 241, 0.1);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 0.3s ease;
-}
-
-.custom-checkbox:hover .checkbox-icon:before {
-  transform: scaleX(1);
-}
-
-.custom-checkbox input:checked + .checkbox-icon svg {
-  animation: check-animation 0.5s cubic-bezier(0.17, 0.67, 0.83, 0.67);
-  transform: scale(1);
-}
-
-@keyframes check-animation {
-  0% {
-    transform: scale(0);
-  }
-  50% {
-    transform: scale(1.2);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
-/* 给选中的卡片添加动画效果 */
-.token-card.ring-2 {
-  animation: selected-pulse 2s infinite;
-}
-
-@keyframes selected-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(99, 102, 241, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
-  }
-}
-
-/* 马卡龙紫色刷新按钮动画 */
-@keyframes refresh-pulse-purple {
-  0% {
-    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.4);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(168, 85, 247, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0);
-  }
-}
-
-/* 马卡龙绿色刷新按钮动画 */
-@keyframes refresh-pulse-green {
-  0% {
-    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.4);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(74, 222, 128, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);
-  }
-}
-
-/* 马卡龙粉色刷新按钮动画 */
-@keyframes refresh-pulse-pink {
-  0% {
-    box-shadow: 0 0 0 0 rgba(236, 72, 153, 0.4);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(236, 72, 153, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(236, 72, 153, 0);
-  }
-}
-
-.action-button:hover {
-  animation: refresh-pulse-purple 1.5s infinite;
-}
-
-/* 刷新中的按钮样式 - 马卡龙紫色 */
-.refreshing-button-purple {
-  background: linear-gradient(45deg, #c084fc, #a855f7);
-  color: white;
-  animation: refresh-pulse-purple 1.5s infinite;
-  box-shadow: 0 4px 15px rgba(168, 85, 247, 0.3);
-}
-
-/* 刷新中的按钮样式 - 马卡龙绿色 */
-.refreshing-button-green {
-  background: linear-gradient(45deg, #86efac, #4ade80);
-  color: white;
-  animation: refresh-pulse-green 1.5s infinite;
-  box-shadow: 0 4px 15px rgba(74, 222, 128, 0.3);
-}
-
-/* 刷新中的按钮样式 - 马卡龙粉色 */
-.refreshing-button-pink {
-  background: linear-gradient(45deg, #f472b6, #ec4899);
-  color: white;
-  animation: refresh-pulse-pink 1.5s infinite;
-  box-shadow: 0 4px 15px rgba(236, 72, 153, 0.3);
-}
-
-/* 马卡龙色系按钮增强效果 */
-.action-button {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  backdrop-filter: blur(10px);
-}
-
-.action-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-}
-</style>

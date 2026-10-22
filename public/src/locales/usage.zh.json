@@ -1,0 +1,100 @@
+{
+  "usage": {
+    "title": "用量统计",
+    "subtitle": "按天汇总各账号的 chat / cli Token 消耗，历史数据保留 90 天。",
+    "range": "统计区间 {from} ~ {to} · 共 {days} 天",
+    "period": {
+      "currentMonth": "当月",
+      "prevMonth": "上月",
+      "last90": "最近 90 天"
+    },
+    "actions": {
+      "refresh": "刷新",
+      "exportDaily": "导出按天明细",
+      "exportAccounts": "导出账号汇总"
+    },
+    "kpi": {
+      "total": "总 Token",
+      "today": "今日 Token",
+      "cliCalls": "CLI 调用",
+      "activeAccounts": "活跃账号",
+      "trackedDays": "统计天数",
+      "avgDaily": "日均 Token",
+      "inOut": "输入 {input} · 输出 {output}",
+      "ofAccounts": "共 {n} 个账号",
+      "rangeDays": "区间共 {n} 天",
+      "perActiveDay": "按 {n} 个有数据日平均",
+      "vsPrev": "较上一周期",
+      "vsYesterday": "较昨日",
+      "noPrev": "无可比数据"
+    },
+    "chart": {
+      "title": "每日 Token 趋势",
+      "subtitle": "堆叠柱：chat / cli 的输入与输出，附峰值与日均参考线",
+      "chatInput": "Chat 输入",
+      "chatOutput": "Chat 输出",
+      "cliInput": "CLI 输入",
+      "cliOutput": "CLI 输出",
+      "total": "合计",
+      "peak": "峰值",
+      "mean": "日均",
+      "peakDay": "峰值日 {date}",
+      "empty": "该区间内还没有 Token 用量记录"
+    },
+    "table": {
+      "title": "按账号对比",
+      "subtitle": "点击任意一行查看该账号的单账号趋势",
+      "account": "账号",
+      "input": "输入",
+      "output": "输出",
+      "total": "合计",
+      "share": "占比",
+      "avgDaily": "日均",
+      "peakDay": "峰值日",
+      "change": "环比",
+      "empty": "当前区间没有账号用量",
+      "sortHint": "点击列头排序",
+      "noData": "无数据",
+      "summary": "共 {n} 个账号 · 合计 {total}"
+    },
+    "drill": {
+      "title": "账号趋势：{email}",
+      "total": "合计 Token",
+      "avg": "日均",
+      "peak": "峰值日",
+      "activeDays": "有数据天数",
+      "empty": "该账号在此区间内没有用量",
+      "export": "导出该账号"
+    },
+    "status": {
+      "loadFailed": "用量数据加载失败",
+      "exported": "已导出 {file}",
+      "exportEmpty": "当前区间没有可导出的数据"
+    },
+    "empty": {
+      "title": "还没有可统计的用量",
+      "hint": "账号产生 chat 或 cli 调用后，这里会按天展示 Token 消耗。"
+    },
+    "unit": {
+      "k": "K",
+      "m": "M"
+    },
+    "csv": {
+      "date": "日期",
+      "account": "账号",
+      "chatInput": "Chat 输入",
+      "chatOutput": "Chat 输出",
+      "cliCalls": "CLI 调用",
+      "cliInput": "CLI 输入",
+      "cliOutput": "CLI 输出",
+      "total": "合计",
+      "share": "占比",
+      "avgDaily": "日均",
+      "peakDay": "峰值日",
+      "peak": "峰值",
+      "change": "环比",
+      "input": "输入",
+      "output": "输出"
+    }
+  }
+}

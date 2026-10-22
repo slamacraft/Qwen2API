@@ -6,11 +6,48 @@
 
 const config = require('../config/index.js')
 const { getTimezoneHeader } = require('./tools')
+const { getBrowserProfile, getWebVersion } = require('./browser-profile')
 
-// chat.qwen.ai 前端版本（FE version）：请求头 Version 必须与线上前端一致，
-// 否则 /api/v2/chat/completions 返回 Bad_Request（2026-10-17 实测线上为 0.3.19）。
-// 前端三天内从 0.3.17 升到 0.3.19，此处过期需同步更新。
-const QWEN_WEB_VERSION = '0.3.19'
+// 关于 `Version` 请求头：**必须有**，且要等于线上前端版本。
+// 2026-10-22 实测：缺这个头时 /api/v2/chat/completions 直接回 Bad_Request
+// （"Internal error..."）；浏览器自己发的就是 `Version: 0.3.20`。
+// 但只有这个头还不够——同一个请求还必须带有效的 baxia 指纹（bx-ua / bx-umidtoken）
+// 和浏览器会话 cookie，否则 WAF 回 unauthorized。见 browser-profile.js。
+
+/**
+ * 浏览器指纹（baxia）覆盖：有指纹时用它替换合成的 cookie / UA / sec-ch-ua，并补上
+ * baxia 头与浏览器当前的 access token。没有指纹时保持原行为（token + 合成的 ssxmod）。
+ *
+ * 按账号取：轮换到哪个账号就用哪个账号的会话（见 browser-profile.js 的文件命名）。
+ * @param {object} headers
+ * @param {object|null} account
+ * @param {object} options
+ */
+const applyBrowserProfile = (headers, account, options) => {
+    const profile = options.browserProfile === undefined
+        ? getBrowserProfile(account && account.email)
+        : options.browserProfile
+    if (!profile) return
+
+    headers['cookie'] = profile.cookie
+    headers['bx-ua'] = profile.bxUa
+    headers['bx-umidtoken'] = profile.bxUmidtoken
+    headers['bx-v'] = profile.bxV
+    // 浏览器真实请求头优先：代理合成的 UA 是 Chrome 149，浏览器是 155，两套并存等于自相矛盾
+    if (profile.userAgent) headers['user-agent'] = profile.userAgent
+    if (profile.secChUa) headers['sec-ch-ua'] = profile.secChUa
+    if (profile.secChUaPlatform) headers['sec-ch-ua-platform'] = profile.secChUaPlatform
+    if (profile.secChUaMobile) headers['sec-ch-ua-mobile'] = profile.secChUaMobile
+    if (profile.acceptLanguage) headers['accept-language'] = profile.acceptLanguage
+    if (profile.timezone) headers['timezone'] = profile.timezone
+    // 浏览器当前的 access token 优先：账号里存的那份可能已被新登录会话挤掉
+    if (profile.token) headers['Authorization'] = `Bearer ${profile.token}`
+}
+
+/** `Version` 头：指纹文件里的前端版本 > QWEN_WEB_VERSION > 内置默认值。 */
+const applyVersionHeader = (headers, account, options) => {
+    headers['Version'] = (options && options.webVersion) || getWebVersion(account && account.email)
+}
 
 // Chrome version pool — small set to avoid identical UA across all accounts
 const CHROME_VERSIONS = ['149.0.0.0', '148.0.0.0', '147.0.0.0', '146.0.0.0']
@@ -104,7 +141,6 @@ function buildRequestHeaders(account, options = {}) {
             'accept': options.accept || 'application/json',
             'accept-encoding': 'gzip, deflate, br, zstd',
             'source': 'web',
-            'Version': QWEN_WEB_VERSION,
             'timezone': getTimezoneHeader(),
             'connection': 'keep-alive',
             'sec-fetch-dest': 'empty',
@@ -125,6 +161,8 @@ function buildRequestHeaders(account, options = {}) {
             headers['Authorization'] = `Bearer ${options.token}`
         }
         if (options.extra) Object.assign(headers, options.extra)
+        applyBrowserProfile(headers, account, options)
+        applyVersionHeader(headers, account, options)
         return headers
     }
 
@@ -151,7 +189,6 @@ function buildRequestHeaders(account, options = {}) {
         'accept': options.accept || 'application/json',
         'accept-encoding': 'gzip, deflate, br, zstd',
         'source': 'web',
-        'Version': QWEN_WEB_VERSION,
         'timezone': timezone,
         'connection': 'keep-alive',
         'sec-fetch-dest': 'empty',
@@ -175,6 +212,10 @@ function buildRequestHeaders(account, options = {}) {
     }
 
     if (options.extra) Object.assign(headers, options.extra)
+
+    // 指纹与 Version 最后覆盖：它们代表"真实浏览器"，必须赢过上面合成的 UA/cookie
+    applyBrowserProfile(headers, account, options)
+    applyVersionHeader(headers, account, options)
 
     return headers
 }

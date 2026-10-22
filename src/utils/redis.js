@@ -405,7 +405,8 @@ const getAllAccounts = async () => {
         expires: accountData.expires || '',
         proxy: accountData.proxy || null,
         stats,
-        statsHistory
+        statsHistory,
+        disabled: accountData.disabled === '1' || accountData.disabled === true
       }
     }).filter(Boolean) // 过滤掉null值
 
@@ -427,7 +428,7 @@ const setAccount = async (key, value) => {
   try {
     const client = await ensureConnection()
 
-    const { password, token, expires, proxy, stats, statsHistory } = value
+    const { password, token, expires, proxy, stats, statsHistory, disabled } = value
 
     // 仅写入显式传入的字段——HSET 不影响其他字段，保留 MERGE 语义
     // 这样 partial save（token refresh / proxy update）不会清零 daily stats
@@ -438,6 +439,8 @@ const setAccount = async (key, value) => {
     if (proxy !== undefined) payload.proxy = proxy || ''
     if (stats !== undefined) payload.stats = JSON.stringify(stats)
     if (statsHistory !== undefined) payload.statsHistory = JSON.stringify(statsHistory)
+    // Redis hash 只能存字符串，手动禁用用 '1'/'0' 表示
+    if (disabled !== undefined) payload.disabled = disabled === true ? '1' : '0'
 
     if (Object.keys(payload).length === 0) {
       logger.warn(`账户 ${key} setAccount 收到空 payload，跳过写入`, 'REDIS')

@@ -263,7 +263,12 @@ function runOnce (files, watchdogMs) {
         const file = files[next++]
         const child = spawn(process.execPath,
           ['--test', '--test-isolation=none', '--test-force-exit', file],
-          { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] })
+          {
+            cwd: ROOT,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            // 测试里绝不能真的去开 Chrome 采集浏览器指纹：那会写文件、拖慢并污染数据目录
+            env: { ...process.env, QWEN2API_DISABLE_AUTO_HARVEST: '1' }
+          })
         running.add(child)
 
         let buf = ''

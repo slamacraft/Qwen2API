@@ -16,6 +16,10 @@ class AccountRotator {
     this.quotaCooldownUntil = new Map() // 日额度耗尽的账户 -> 解禁时间戳（见 recordQuotaExhausted）
     this.maxFailures = 3 // 最大失败次数
     this.cooldownPeriod = 5 * 60 * 1000 // 5分钟冷却期
+    // 选号策略：priority = 按顺序取第一个可用（额度不够才换号）；balanced = 最少使用优先
+    this.policy = 'priority'
+    // 额外可用性判定（如"该账号还没有浏览器指纹"），由 account.js 注入
+    this.accountFilter = null
     // 额度耗尽的默认静默期。上游给了 `data.num`（小时）时用那个，这是没给时的回退。
     // 1 小时是刻意保守：额度按天重置，所以更久也“正确”，但分类若误判（文本回退可能
     // 命中别的东西），一天的流放会白白扔掉一个好账户；1 小时足以掐断热循环，
@@ -41,6 +45,26 @@ class AccountRotator {
   }
 
   /**
+   * 设置选号策略。
+   * - 'priority'（默认）：按账户列表顺序取第一个可用账户，只有它不可用（额度耗尽/冷却/禁用）
+   *   才顺延到下一个。这就是"额度不够才换号"。
+   * - 'balanced'：最少使用优先，请求在账户之间均摊（旧行为）。
+   * @param {'priority'|'balanced'} policy
+   */
+  setPolicy(policy) {
+    this.policy = policy === 'balanced' ? 'balanced' : 'priority'
+  }
+
+  /**
+   * 设置额外的可用性判定（例如"这个账号还没有浏览器指纹"）。
+   * 返回 false 的账户不会进入轮换。
+   * @param {((account: Object) => boolean)|null} filter
+   */
+  setAccountFilter(filter) {
+    this.accountFilter = typeof filter === 'function' ? filter : null
+  }
+
+  /**
    * 获取下一个可用的账户对象
    * @param {string[]} excludedEmails - Accounts already attempted in this request
    * @returns {Object|null} 账户对象或 null
@@ -58,8 +82,9 @@ class AccountRotator {
       return null
     }
 
-    // 从可用账户中选择最少使用的
-    const selectedAccount = this._selectLeastUsedAccount(availableAccounts)
+    const selectedAccount = this.policy === 'balanced'
+      ? this._selectLeastUsedAccount(availableAccounts)
+      : availableAccounts[0]
     this._recordUsage(selectedAccount.email)
 
     return selectedAccount
@@ -223,7 +248,10 @@ class AccountRotator {
    * @private
    */
   _getAvailableAccounts() {
-    return this.accounts.filter(account => this._isAccountAvailable(account))
+    return this.accounts.filter(account =>
+      this._isAccountAvailable(account) &&
+      (!this.accountFilter || this.accountFilter(account))
+    )
   }
 
   /**
@@ -233,6 +261,12 @@ class AccountRotator {
    * @private
    */
   _isAccountAvailable(account) {
+    // 手动禁用优先于一切：这是管理员显式关掉的账号，不参与轮换，也不因为 token 正常、
+    // 冷却结束或额度恢复而自己回来。只有再次手动启用才会重新进入队列。
+    if (account.disabled) {
+      return false
+    }
+
     if (!account.token) {
       return false
     }

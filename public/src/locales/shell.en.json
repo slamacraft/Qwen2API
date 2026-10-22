@@ -1,0 +1,39 @@
+{
+  "shell": {
+    "brand": "Qwen2API",
+    "subtitle": "Admin console",
+    "nav": {
+      "accounts": "Accounts",
+      "usage": "Usage",
+      "settings": "Settings",
+      "chat": "Test chat"
+    },
+    "logout": "Sign out",
+    "menu": "Menu",
+    "collapse": "Collapse sidebar",
+    "expand": "Expand sidebar",
+    "language": "Language"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "close": "Close",
+    "loading": "Loading…",
+    "empty": "No data",
+    "search": "Search",
+    "copy": "Copy",
+    "copied": "Copied",
+    "refresh": "Refresh",
+    "actions": "Actions",
+    "yes": "Yes",
+    "no": "No",
+    "retry": "Retry",
+    "all": "All",
+    "export": "Export",
+    "apply": "Apply",
+    "reset": "Reset",
+    "total": "Total"
+  }
+}

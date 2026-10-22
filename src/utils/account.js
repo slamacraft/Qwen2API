@@ -4,6 +4,7 @@ const TokenManager = require('./token-manager')
 const AccountRotator = require('./account-rotator')
 const { logger } = require('./logger')
 const { generateDeterministicFingerprint } = require('./fingerprint')
+const { canUseAccountForUpstream } = require('./browser-profile')
 
 /**
  * 默认 daily stats 结构。返回新对象，调用方安全修改
@@ -102,6 +103,10 @@ class Account {
         this.dataPersistence = new DataPersistence()
         this.tokenManager = new TokenManager()
         this.accountRotator = new AccountRotator()
+        // 选号策略：默认按顺序取第一个可用账号（额度不够才换号），ACCOUNT_ROTATION=balanced 恢复均摊
+        this.accountRotator.setPolicy(config.accountRotation)
+        // 没有自己浏览器指纹的账号不参与轮换：它要么被上游拒，要么借全局指纹串到别人的额度上
+        this.accountRotator.setAccountFilter(account => canUseAccountForUpstream(account))
 
         // 账户数据
         this.accountTokens = []
@@ -160,6 +165,18 @@ class Account {
         }
         if (!Array.isArray(this.accountTokens) || this.accountTokens.length === 0) {
             return '没有可用的账户，请在管理面板中添加账户'
+        }
+        // 有账号、但一个都进不了轮换：最常见的原因是缺浏览器会话（baxia 指纹）。
+        // 刷新令牌只换 JWT，换不来 baxia 指纹，所以这里要把话说清楚，并给出可执行的下一步
+        // （面板一键生成 > 本机采集脚本）。
+        const usable = this.accountTokens.filter(account => !account.disabled && canUseAccountForUpstream(account))
+        if (usable.length === 0) {
+            // 只列「本来能参与轮换」的账号：把手动禁用的账号也算进来，会让人以为它们也是坏的
+            const enabled = this.accountTokens.filter(account => !account.disabled)
+            const emails = (enabled.length > 0 ? enabled : this.accountTokens).map(account => account.email).join('、')
+            return `账户 ${emails} 还没有浏览器会话（缺 baxia 指纹），上游会拒绝请求。` +
+                '请到管理面板的账号列表点「生成」，服务器会自动用账号密码登录并采集（不需要本机 Chrome）；' +
+                '也可以在装有 Chrome 的机器上运行 `node scripts/harvest-browser-profile.mjs --port <端口> --out data/browser-profile.<邮箱>.json`。'
         }
         return null
     }
@@ -569,6 +586,23 @@ class Account {
         }
 
         return account
+    }
+
+    /**
+     * 按「最少使用」挑一个账号（会话复用：新会话要尽量均摊到各账号）。
+     * 临时切到 balanced 策略取一次，再恢复原策略——不影响其它调用方的粘性选号。
+     * @param {string[]} [excludedEmails]
+     * @returns {Object|null}
+     */
+    getLeastUsedAccount(excludedEmails = []) {
+        if (!this.isInitialized || this.accountTokens.length === 0) return null
+        const previous = this.accountRotator.policy
+        try {
+            this.accountRotator.setPolicy('balanced')
+            return this.accountRotator.getNextAccount(excludedEmails)
+        } finally {
+            this.accountRotator.setPolicy(previous)
+        }
     }
 
     /**
@@ -992,6 +1026,52 @@ class Account {
             return true
         } catch (error) {
             logger.error(`更新账户 ${email} 代理失败`, 'ACCOUNT', '', error)
+            return false
+        }
+    }
+
+    /**
+     * 手动启用/禁用账户。
+     *
+     * 禁用 = 从轮换队列里摘掉（account-rotator.js#_isAccountAvailable 的第一道门），
+     * 但账号本身、token、统计都保留：重新启用后立刻可用，不需要重新登录。
+     * 这是管理员显式意图，与「冷却」「额度耗尽」那种自动恢复的状态分开。
+     *
+     * @param {string} email - 邮箱
+     * @param {boolean} disabled - true = 禁用
+     * @returns {Promise<boolean>} 是否成功（DATA_SAVE_MODE=none 时只改内存并返回 true）
+     */
+    async setAccountDisabled(email, disabled) {
+        try {
+            const account = this.accountTokens.find(acc => acc.email === email)
+            if (!account) {
+                logger.warn(`账户 ${email} 不存在`, 'ACCOUNT')
+                return false
+            }
+
+            const next = disabled === true
+            const previous = account.disabled
+            if ((previous === true) === next) return true
+
+            account.disabled = next
+
+            // DATA_SAVE_MODE=none 没有持久化介质，改内存就是全部语义
+            if (config.dataSaveMode === 'none') {
+                logger.info(`账户 ${email} 已${next ? '禁用' : '启用'}（内存模式，不持久化）`, 'ACCOUNT')
+                return true
+            }
+
+            const saved = await this.dataPersistence.saveAccount(email, { disabled: next })
+            if (!saved) {
+                account.disabled = previous
+                logger.error(`账户 ${email} 禁用状态持久化失败，已回滚内存数据`, 'ACCOUNT')
+                return false
+            }
+
+            logger.success(`账户 ${email} 已${next ? '禁用（移出轮换队列）' : '启用（重新加入轮换队列）'}`, 'ACCOUNT')
+            return true
+        } catch (error) {
+            logger.error(`更新账户 ${email} 禁用状态失败`, 'ACCOUNT', '', error)
             return false
         }
     }

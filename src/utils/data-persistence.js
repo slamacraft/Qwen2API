@@ -267,6 +267,8 @@ class DataPersistence {
       if (accountData.stats !== undefined) merged.stats = accountData.stats
       if (accountData.statsHistory !== undefined) merged.statsHistory = accountData.statsHistory
       if (accountData.fingerprint !== undefined) merged.fingerprint = accountData.fingerprint
+      // 手动禁用标记：只在显式传入时写，partial save 不会把它抹掉
+      if (accountData.disabled !== undefined) merged.disabled = accountData.disabled === true
 
       if (existingIndex !== -1) {
         data.accounts[existingIndex] = merged
@@ -308,7 +310,8 @@ class DataPersistence {
         proxy: account.proxy ?? null,
         stats: account.stats ?? undefined,
         statsHistory: account.statsHistory ?? undefined,
-        fingerprint: account.fingerprint ?? undefined
+        fingerprint: account.fingerprint ?? undefined,
+        disabled: account.disabled === true ? true : undefined
       }))
 
       await this._writeDataFile(data)

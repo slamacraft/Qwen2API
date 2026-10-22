@@ -21,6 +21,7 @@ Qwen-Proxy 是一个将 `https://chat.qwen.ai` 和 `Qwen Code / Qwen Cli` 转换
 **主要特性：**
 - 兼容 OpenAI API 格式，无缝对接各类客户端
 - 兼容 Anthropic Messages API（`/v1/messages`），支持 Claude Code、Anthropic SDK 等客户端
+- 兼容 OpenAI Responses API（`/v1/responses`），支持流式/非流式、思考过程与工具调用，可直接对接 OpenAI SDK、Codex CLI
 - 支持 Function Calling（OpenAI `tools` / Anthropic `tools`），含流式 `arguments` 增量分片与 `tool_choice=required` 强校验重试
 - 支持多账户轮询，提高可用性
 - 支持流式/非流式响应
@@ -130,7 +131,7 @@ CACHE_MODE=default            # 图片缓存模式 (default/file)
 | `OUTPUT_THINK` | 是否显示 AI 思考过程 | `true` 或 `false` |
 | `LEGACY_REASONING_IN_CONTENT` | 推理输出格式。默认 `false`=推理走独立的 `reasoning_content` 字段；`true`=旧版行为（`<think>` 并入 `content`） | `true` 或 `false` |
 | `SIMPLE_MODEL_MAP` | 简化模型映射，只返回基础模型不包含变体 | `true` 或 `false` |
-| `MODEL_MAP` | 入站模型名映射：`alias=qwen-id,...,*=fallback`。精确匹配优先（末尾 `[..]` 先去掉、不区分大小写），上游已有的 Qwen id 原样透传，其余走 `*`；只作用于 `/v1/chat/completions` 与 `/v1/messages`。也可在管理面板「系统设置 → 模型映射」里在线编辑，面板保存的映射优先于本变量；详见 `.env.example` | `*=qwen3.8-max-thinking` |
+| `MODEL_MAP` | 入站模型名映射：`alias=qwen-id,...,*=fallback`。精确匹配优先（末尾 `[..]` 先去掉、不区分大小写），上游已有的 Qwen id 原样透传，其余走 `*`；只作用于 `/v1/chat/completions`、`/v1/messages` 与 `/v1/responses`。也可在管理面板「系统设置 → 模型映射」里在线编辑，面板保存的映射优先于本变量；详见 `.env.example` | `*=qwen3.8-max-thinking` |
 | `MODELS_CACHE_TTL` | 模型列表缓存有效期（秒），过期后下次请求自动向上游刷新；`0` 表示永不过期 | `3600` |
 | `AGENT_TURN_ALLOW_PROSE_WITH_TOOLS` | 放宽回合门禁：允许同一回合既有有效工具调用又有可见正文。Anthropic Messages API 允许 `text` 与 `tool_use` 共存，Claude Code 等客户端因此会被严格模式反复判为 `invalid_tool_call` | `false` |
 | `AGENT_TURN_ACCEPT_BARE_FINAL` | 放宽回合门禁：把有可见正文但缺少 `<agent_final>` 包装的回合按 `finish_reason=stop` 接受，而不是判为 `bare` 并重试 | `false` |
@@ -738,6 +739,269 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":
 event: message_stop
 data: {"type":"message_stop"}
 ```
+
+### 🔌 OpenAI Responses API
+
+提供 **OpenAI Responses API** 的 `/v1/responses` 端点。它采用 OpenAI 新版的「解耦」格式：输入是 `input` 条目，输出是 `output` 条目，流式响应是一串 `response.*` 事件。该端点与 `/v1/chat/completions` 相互独立、可以并存；OpenAI 官方 SDK 的 `client.responses.create()`、Codex CLI 等遵循该协议的客户端可直接接入。
+
+```http
+POST /v1/responses
+Content-Type: application/json
+Authorization: Bearer sk-your-api-key
+```
+
+**请求示例（流式）：**
+
+```bash
+curl -N http://localhost:3000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "qwen3.7-plus",
+    "input": "用一句话解释什么是向量数据库",
+    "instructions": "你是简洁的助手，回答不超过三句话。",
+    "stream": true,
+    "max_output_tokens": 1024,
+    "temperature": 0.7,
+    "reasoning": { "effort": "medium" }
+  }'
+```
+
+**`input` 的写法：**
+
+纯字符串，等价于一条 user 消息：
+
+```json
+{ "input": "你好" }
+```
+
+消息数组，`content` 可以是字符串，也可以是分段数组：
+
+```json
+{
+  "input": [
+    { "role": "user", "content": "你好" }
+  ]
+}
+```
+
+```json
+{
+  "input": [
+    { "role": "user", "content": [{ "type": "input_text", "text": "你好" }] }
+  ]
+}
+```
+
+工具结果回填，通常与上一轮的 `function_call` 条目一起发回：
+
+```json
+{
+  "input": [
+    { "type": "function_call", "call_id": "call_xxx", "name": "get_time", "arguments": "{}" },
+    { "type": "function_call_output", "call_id": "call_xxx", "output": "{\"time\":\"12:00\"}" }
+  ]
+}
+```
+
+**请求字段：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `model` | string | 模型 ID，取值同 `/v1/models` 返回的 `id` |
+| `input` | string \| array | 字符串或条目数组，写法见上 |
+| `instructions` | string | 等价于 `system`，会放在对话最前面 |
+| `stream` | boolean | `true` 时返回 SSE 事件流，默认 `false` |
+| `max_output_tokens` | number | 输出长度上限 |
+| `temperature` / `top_p` | number | 采样参数 |
+| `tools[]` | array | 函数工具，形状为 `{type:"function",name,description,parameters}`（比 `/v1/chat/completions` 少一层 `function` 包装） |
+| `tool_choice` | string \| object | `auto` / `required` / `none`，或 `{type:"function",name:"..."}` 指定函数 |
+| `reasoning.effort` | string | `none` / `minimal` 关闭思考，其余取值开启思考 |
+| `user` | string | 终端用户标识，随请求透传 |
+
+**非流式请求：**
+
+```json
+{
+  "model": "qwen3.7-plus",
+  "input": "你好",
+  "instructions": "只用两个字回答，不要解释。"
+}
+```
+
+**非流式响应：**
+
+```json
+{
+  "id": "resp_d2beb5aef96b4826a58e36a920630467",
+  "object": "response",
+  "created_at": 1792661279,
+  "status": "completed",
+  "model": "qwen3.7-plus",
+  "output": [
+    {
+      "id": "rs_2c68fffeb3e34ebe8d8b9c0f81677704",
+      "type": "reasoning",
+      "summary": [
+        { "type": "summary_text", "text": "我仔细审视了用户的明确要求，即仅以两个字进行回应。……" }
+      ]
+    },
+    {
+      "id": "msg_f2f5eeb079c14b83a8bb0f91591b3f03",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        { "type": "output_text", "text": "你好", "annotations": [] }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 1236,
+    "output_tokens": 84,
+    "total_tokens": 1320,
+    "input_tokens_details": { "cached_tokens": 0 },
+    "output_tokens_details": { "reasoning_tokens": 0 }
+  },
+  "error": null,
+  "incomplete_details": null
+}
+```
+
+`output` 是条目数组，按顺序可能出现三类条目：
+
+- `reasoning`：思考摘要，文本在 `summary[0].text`
+- `message`：正式回答，文本在 `content[0].text`（`type` 为 `output_text`）
+- `function_call`：工具调用，字段为 `call_id` / `name` / `arguments`，其中 `arguments` 是 JSON 字符串
+
+**工具调用（多轮）：**
+
+`tools[]` 使用 Responses 的扁平形状。第一轮请求：
+
+```json
+{
+  "model": "qwen3-coder-plus",
+  "input": "现在几点？",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_time",
+      "description": "返回当前时间",
+      "parameters": { "type": "object", "properties": {} }
+    }
+  ]
+}
+```
+
+响应的 `output` 中出现 `function_call` 条目：
+
+```json
+{
+  "id": "fc_xxx",
+  "type": "function_call",
+  "status": "completed",
+  "call_id": "call_abc123",
+  "name": "get_time",
+  "arguments": "{}"
+}
+```
+
+第二轮把这次调用和工具结果一起放进 `input`，即可拿到正常正文：
+
+```json
+{
+  "model": "qwen3-coder-plus",
+  "input": [
+    { "type": "function_call", "call_id": "call_abc123", "name": "get_time", "arguments": "{}" },
+    { "type": "function_call_output", "call_id": "call_abc123", "output": "{\"time\":\"2026-10-22 17:30\"}" }
+  ]
+}
+```
+
+实测第二轮返回正文「现在是 2026年10月22日 17:30。」。工具调用由服务端解析完成，客户端只会看到标准 `function_call` 条目，看不到内部协议文本。
+
+**流式事件（节选）：**
+
+```
+event: response.created
+data: {"type":"response.created","response":{...}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{...}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_xxx","type":"reasoning","summary":[]}}
+
+event: response.reasoning_summary_part.added
+data: {"type":"response.reasoning_summary_part.added","item_id":"rs_xxx","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_xxx","output_index":0,"summary_index":0,"delta":"先说明用途"}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_xxx","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","item_id":"msg_xxx","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_xxx","output_index":1,"content_index":0,"delta":"向量数据库"}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","item_id":"msg_xxx","output_index":1,"content_index":0,"part":{"type":"output_text","text":"向量数据库把文本…","annotations":[]}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_xxx","type":"message","status":"completed","role":"assistant","content":[...]}}
+
+event: response.completed
+data: {"type":"response.completed","response":{...}}
+```
+
+**事件顺序：**
+
+1. `response.created` → `response.in_progress`
+2. 有思考时：`response.output_item.added`（reasoning）→ `response.reasoning_summary_part.added` → `response.reasoning_summary_text.delta` × N → `response.reasoning_summary_text.done` → `response.reasoning_summary_part.done` → `response.output_item.done`（reasoning）
+3. 正式回答：`response.output_item.added`（message）→ `response.content_part.added` → `response.output_text.delta` × N → `response.output_text.done` → `response.content_part.done` → `response.output_item.done`（message）
+4. 有工具调用时：`response.output_item.added`（function_call）→ `response.function_call_arguments.delta` × N → `response.function_call_arguments.done` → `response.output_item.done`
+5. 结束：`response.completed`；出错时改为 `response.failed`
+6. 没有 `[DONE]` 结束帧，请以 `response.completed` / `response.failed` 判断流是否结束
+
+**与 `/v1/chat/completions` 的差异：**
+
+| 维度 | `/v1/chat/completions` | `/v1/responses` |
+|---|---|---|
+| 输入 | `messages[]`，system 用 `role:"system"` | `input`（字符串或条目数组），system 用 `instructions` |
+| 工具定义 | `{type:"function",function:{name,...}}` | `{type:"function",name,...}`（少一层 `function`） |
+| 工具结果 | `role:"tool"` + `tool_call_id` | `{type:"function_call_output",call_id,output}` 条目 |
+| 输出 | `choices[0].message.content` | `output[]` 条目数组（`reasoning` / `message` / `function_call`） |
+| 用量 | `prompt_tokens` / `completion_tokens` / `total_tokens` | `input_tokens` / `output_tokens` / `total_tokens`，另含 `input_tokens_details` / `output_tokens_details` |
+| 流式 | `data: {"choices":[{"delta":...}]}`，以 `[DONE]` 结束 | `event: response.*` + `data: {"type":...}`，以 `response.completed` 结束 |
+
+**客户端接入：**
+
+OpenAI 官方 Python SDK 直接可用：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:3000/v1", api_key="sk-your-api-key")
+
+resp = client.responses.create(
+    model="qwen3.7-plus",
+    input="用一句话解释什么是向量数据库",
+)
+print(resp.output_text)
+```
+
+Codex CLI 只需在 `~/.codex/config.toml` 里把自定义 provider 的 `wire_api` 设为 `"responses"`、`base_url` 指向 `http://localhost:3000/v1`（具体字段以 Codex CLI 文档为准）。
+
+**说明：**
+
+- 目前 Responses 链路按文本处理：图片、视频等非文本 `content` 分段会被忽略，多模态请继续使用 `/v1/chat/completions`
+- `usage` 中的 `input_tokens_details.cached_tokens` 与 `output_tokens_details.reasoning_tokens` 目前固定为 `0`（暂未透出该粒度）
+- `tools[]` 只接受 `type:"function"`；`web_search`、`file_search` 等内置工具暂不支持
+- 请求体不合法时返回 `400`：`input` 为空（`code` 为 `invalid_input`）、缺少 `model`（`code` 为 `invalid_model`）；上游失败返回 `502` 或上游状态码，错误体统一为 `{"error":{"message","type","code","param"}}`
+- 流式失败时发送 `response.failed`，其 `response.status` 为 `failed`，`error` 字段带 `code` / `message`
 
 ### 🎨 图像与视频生成
 

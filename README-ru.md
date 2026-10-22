@@ -20,6 +20,7 @@ Qwen-Proxy — это прокси-сервис, преобразующий `htt
 
 **Основные возможности:**
 - Совместимость с форматом OpenAI API, бесшовная интеграция с различными клиентами
+- Совместимость с OpenAI Responses API (`/v1/responses`): потоковый и непотоковый режимы, рассуждения и вызов инструментов; работает с OpenAI SDK и Codex CLI
 - Поддержка ротации нескольких аккаунтов для повышения доступности
 - Поддержка потоковых/непотоковых ответов
 - Поддержка мультимодальности (распознавание изображений, генерация изображений)
@@ -145,7 +146,7 @@ CACHE_MODE=default            # Режим кэширования изображ
 | `OUTPUT_THINK` | Отображать ли процесс размышления AI | `true` или `false` |
 | `LEGACY_REASONING_IN_CONTENT` | Формат вывода рассуждений. По умолчанию `false` = рассуждения в отдельном поле `reasoning_content`; `true` = старый режим (`<think>` внутри `content`) | `true` или `false` |
 | `SIMPLE_MODEL_MAP` | Упрощенное сопоставление моделей, возвращает только базовые модели без вариантов | `true` или `false` |
-| `MODEL_MAP` | Сопоставление входящих имён моделей: `alias=qwen-id,...,*=fallback`. Точное совпадение в приоритете (хвостовой `[..]` отбрасывается, без учёта регистра), существующие id Qwen проходят без изменений, остальное идёт в `*`; действует только для `/v1/chat/completions` и `/v1/messages`. Редактируется и в панели (Настройки → Сопоставление моделей); сохранённое в панели сопоставление имеет приоритет над этой переменной, см. `.env.example` | `*=qwen3.8-max-thinking` |
+| `MODEL_MAP` | Сопоставление входящих имён моделей: `alias=qwen-id,...,*=fallback`. Точное совпадение в приоритете (хвостовой `[..]` отбрасывается, без учёта регистра), существующие id Qwen проходят без изменений, остальное идёт в `*`; действует только для `/v1/chat/completions`, `/v1/messages` и `/v1/responses`. Редактируется и в панели (Настройки → Сопоставление моделей); сохранённое в панели сопоставление имеет приоритет над этой переменной, см. `.env.example` | `*=qwen3.8-max-thinking` |
 | `MODELS_CACHE_TTL` | Срок жизни кэша списка моделей (в секундах); по истечении следующий запрос обновит список; `0` = бессрочный кэш | `3600` |
 | `AGENT_TURN_MAX_TOOL_CALLS` | Путь Anthropic: лимит блоков `tool_use` по текстовому каналу за один ход агента (4–256). Если модель «идёт вразнос» после нарративного `[TOOL CALL]` (сотни повторов одного вызова, выдуманная сессия целиком), upstream обрывается сразу после N-го принятого вызова, а принятые вызовы отдаются со `stop_reason=tool_use`; после уже принятого в более раннем delta вызова дубликат, отклонённый вызов или проза/размышление также обрывают ход | `24` |
 | `QWEN_CHAT_PROXY_URL` | Пользовательский адрес обратного прокси Chat API | `https://your-proxy.com` |
@@ -655,6 +656,269 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":
 event: message_stop
 data: {"type":"message_stop"}
 ```
+
+### 🔌 OpenAI Responses API
+
+Эндпоинт `/v1/responses` реализует **OpenAI Responses API**. В нём вход и выход разделены: на входе — элементы `input`, на выходе — элементы `output`, а потоковый ответ представляет собой последовательность событий `response.*`. Эндпоинт не зависит от `/v1/chat/completions`, они могут работать параллельно; клиенты, поддерживающие этот протокол, — например, `client.responses.create()` из официального OpenAI SDK или Codex CLI, — подключаются напрямую.
+
+```http
+POST /v1/responses
+Content-Type: application/json
+Authorization: Bearer sk-your-api-key
+```
+
+**Пример запроса (потоковый):**
+
+```bash
+curl -N http://localhost:3000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "qwen3.7-plus",
+    "input": "Объясни в одном предложении, что такое векторная база данных.",
+    "instructions": "Ты краткий помощник. Отвечай не более чем тремя предложениями.",
+    "stream": true,
+    "max_output_tokens": 1024,
+    "temperature": 0.7,
+    "reasoning": { "effort": "medium" }
+  }'
+```
+
+**Как задать `input`:**
+
+Обычная строка — эквивалент одного сообщения user:
+
+```json
+{ "input": "Привет" }
+```
+
+Массив сообщений, где `content` может быть строкой или массивом частей:
+
+```json
+{
+  "input": [
+    { "role": "user", "content": "Привет" }
+  ]
+}
+```
+
+```json
+{
+  "input": [
+    { "role": "user", "content": [{ "type": "input_text", "text": "Привет" }] }
+  ]
+}
+```
+
+Результат инструмента — обычно отправляется вместе с элементом `function_call` из предыдущего хода:
+
+```json
+{
+  "input": [
+    { "type": "function_call", "call_id": "call_xxx", "name": "get_time", "arguments": "{}" },
+    { "type": "function_call_output", "call_id": "call_xxx", "output": "{\"time\":\"12:00\"}" }
+  ]
+}
+```
+
+**Поля запроса:**
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `model` | string | ID модели, те же значения, что `id` в ответе `/v1/models` |
+| `input` | string \| array | Строка или массив элементов, см. выше |
+| `instructions` | string | Эквивалент `system`, добавляется в начало диалога |
+| `stream` | boolean | `true` — поток SSE-событий, по умолчанию `false` |
+| `max_output_tokens` | number | Верхняя граница длины ответа |
+| `temperature` / `top_p` | number | Параметры сэмплирования |
+| `tools[]` | array | Инструменты-функции вида `{type:"function",name,description,parameters}` (на один уровень `function` меньше, чем в `/v1/chat/completions`) |
+| `tool_choice` | string \| object | `auto` / `required` / `none` или `{type:"function",name:"..."}` для фиксированной функции |
+| `reasoning.effort` | string | `none` / `minimal` отключают рассуждения, остальные значения включают |
+| `user` | string | Идентификатор конечного пользователя, передаётся вместе с запросом |
+
+**Непотоковый запрос:**
+
+```json
+{
+  "model": "qwen3.7-plus",
+  "input": "Привет",
+  "instructions": "Ответь одним словом, без пояснений."
+}
+```
+
+**Непотоковый ответ:**
+
+```json
+{
+  "id": "resp_d2beb5aef96b4826a58e36a920630467",
+  "object": "response",
+  "created_at": 1792661279,
+  "status": "completed",
+  "model": "qwen3.7-plus",
+  "output": [
+    {
+      "id": "rs_2c68fffeb3e34ebe8d8b9c0f81677704",
+      "type": "reasoning",
+      "summary": [
+        { "type": "summary_text", "text": "Я внимательно проверил явное требование пользователя: ответить одним словом.……" }
+      ]
+    },
+    {
+      "id": "msg_f2f5eeb079c14b83a8bb0f91591b3f03",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        { "type": "output_text", "text": "Привет", "annotations": [] }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 1236,
+    "output_tokens": 84,
+    "total_tokens": 1320,
+    "input_tokens_details": { "cached_tokens": 0 },
+    "output_tokens_details": { "reasoning_tokens": 0 }
+  },
+  "error": null,
+  "incomplete_details": null
+}
+```
+
+`output` — массив элементов; по порядку могут встречаться три вида:
+
+- `reasoning` — сводка рассуждений, текст в `summary[0].text`
+- `message` — сам ответ, текст в `content[0].text` (`type` равен `output_text`)
+- `function_call` — вызов инструмента с полями `call_id` / `name` / `arguments`, где `arguments` — строка JSON
+
+**Вызов инструментов (несколько ходов):**
+
+`tools[]` использует плоский формат Responses. Запрос первого хода:
+
+```json
+{
+  "model": "qwen3-coder-plus",
+  "input": "Который час?",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_time",
+      "description": "Возвращает текущее время",
+      "parameters": { "type": "object", "properties": {} }
+    }
+  ]
+}
+```
+
+В `output` ответа появляется элемент `function_call`:
+
+```json
+{
+  "id": "fc_xxx",
+  "type": "function_call",
+  "status": "completed",
+  "call_id": "call_abc123",
+  "name": "get_time",
+  "arguments": "{}"
+}
+```
+
+Во втором ходе отправьте этот вызов и его результат вместе в `input`, чтобы получить обычный текст ответа:
+
+```json
+{
+  "model": "qwen3-coder-plus",
+  "input": [
+    { "type": "function_call", "call_id": "call_abc123", "name": "get_time", "arguments": "{}" },
+    { "type": "function_call_output", "call_id": "call_abc123", "output": "{\"time\":\"2026-10-22 17:30\"}" }
+  ]
+}
+```
+
+Во втором ходе в тесте вернулся обычный ответ ассистента. Вызовы инструментов разбираются на стороне сервера, поэтому клиент видит только стандартные элементы `function_call`, без внутреннего протокольного текста.
+
+**Потоковые события (фрагмент):**
+
+```
+event: response.created
+data: {"type":"response.created","response":{...}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{...}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_xxx","type":"reasoning","summary":[]}}
+
+event: response.reasoning_summary_part.added
+data: {"type":"response.reasoning_summary_part.added","item_id":"rs_xxx","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_xxx","output_index":0,"summary_index":0,"delta":"Сначала объяснить"}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_xxx","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","item_id":"msg_xxx","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_xxx","output_index":1,"content_index":0,"delta":"Векторная база"}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","item_id":"msg_xxx","output_index":1,"content_index":0,"part":{"type":"output_text","text":"Векторная база данных…","annotations":[]}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_xxx","type":"message","status":"completed","role":"assistant","content":[...]}}
+
+event: response.completed
+data: {"type":"response.completed","response":{...}}
+```
+
+**Порядок событий:**
+
+1. `response.created` → `response.in_progress`
+2. Если есть рассуждения: `response.output_item.added` (reasoning) → `response.reasoning_summary_part.added` → `response.reasoning_summary_text.delta` × N → `response.reasoning_summary_text.done` → `response.reasoning_summary_part.done` → `response.output_item.done` (reasoning)
+3. Сам ответ: `response.output_item.added` (message) → `response.content_part.added` → `response.output_text.delta` × N → `response.output_text.done` → `response.content_part.done` → `response.output_item.done` (message)
+4. Если есть вызовы инструментов: `response.output_item.added` (function_call) → `response.function_call_arguments.delta` × N → `response.function_call_arguments.done` → `response.output_item.done`
+5. Завершение: `response.completed`; при ошибке — `response.failed`
+6. Финального `[DONE]` нет: конец потока определяется по `response.completed` / `response.failed`
+
+**Отличия от `/v1/chat/completions`:**
+
+| Аспект | `/v1/chat/completions` | `/v1/responses` |
+|---|---|---|
+| Вход | `messages[]`, system через `role:"system"` | `input` (строка или массив элементов), system через `instructions` |
+| Описание инструментов | `{type:"function",function:{name,...}}` | `{type:"function",name,...}` (без уровня `function`) |
+| Результат инструмента | `role:"tool"` + `tool_call_id` | элемент `{type:"function_call_output",call_id,output}` |
+| Выход | `choices[0].message.content` | массив элементов `output[]` (`reasoning` / `message` / `function_call`) |
+| Использование токенов | `prompt_tokens` / `completion_tokens` / `total_tokens` | `input_tokens` / `output_tokens` / `total_tokens`, плюс `input_tokens_details` / `output_tokens_details` |
+| Поток | `data: {"choices":[{"delta":...}]}`, завершается `[DONE]` | `event: response.*` + `data: {"type":...}`, завершается `response.completed` |
+
+**Подключение клиентов:**
+
+Официальный Python SDK OpenAI работает без доработок:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:3000/v1", api_key="sk-your-api-key")
+
+resp = client.responses.create(
+    model="qwen3.7-plus",
+    input="Объясни в одном предложении, что такое векторная база данных.",
+)
+print(resp.output_text)
+```
+
+Для Codex CLI достаточно указать у своего provider в `~/.codex/config.toml` параметры `wire_api = "responses"` и `base_url = "http://localhost:3000/v1"` (точные поля — в документации Codex CLI).
+
+**Примечания:**
+
+- Сейчас Responses-цепочка работает только с текстом: нетекстовые части `content` (изображения, видео) игнорируются, для мультимодальных запросов используйте `/v1/chat/completions`
+- `input_tokens_details.cached_tokens` и `output_tokens_details.reasoning_tokens` в `usage` сейчас всегда равны `0` (эта детализация пока не передаётся)
+- `tools[]` принимает только `type:"function"`; встроенные инструменты вроде `web_search` и `file_search` пока не поддерживаются
+- Некорректное тело запроса даёт `400`: пустой `input` (`code` — `invalid_input`) или отсутствующий `model` (`code` — `invalid_model`); ошибка upstream — `502` или статус upstream. Тело ошибки единое: `{"error":{"message","type","code","param"}}`
+- При ошибке поток завершается событием `response.failed`: `response.status` равен `failed`, а `error` содержит `code` / `message`
 
 ### 🎨 Генерация/редактирование изображений
 

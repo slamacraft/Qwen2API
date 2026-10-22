@@ -13,3 +13,6 @@ pkg_dist/
 /public/dist
 .vscode
 .bce-tool/
+reqContent/
+# 根目录的界面截图是本地验收产物（界面里有账号邮箱），不入库
+/*.png

@@ -9,6 +9,7 @@ const { deleteAccount, saveAccounts } = require('../utils/setting')
 const { parseAccountLine } = require('../utils/account-parser')
 const { isValidProxyUrl } = require('../utils/proxy-helper')
 const { DEFAULT_CLI_QUOTA_LIMIT, getAccountCliState } = require('../utils/cli-support')
+const { provisionProfile, describeAccountUsability, clearProvisionBackoff } = require('../utils/browser-profile')
 
 // 仅在 proxy 字段存在时触发；空字符串/null 一律视为"清除代理"，无需校验
 const PROXY_FORMAT_ERROR = '代理 URL 格式无效，应以 http://、https://、socks5:// 或 socks5h:// 开头'
@@ -266,21 +267,23 @@ const runBatchAccountTask = async (task, newAccounts) => {
   }
 }
 
-// 账号令牌（JWT）掩码占位符
-const ACCOUNT_TOKEN_MASK = '••••••••'
-
 /**
- * 掩码账号令牌，避免 getAllAccounts 明文返回 JWT。
- * JWT 相当于登录该 Qwen 账号的凭证，一旦管理密钥泄露即可被批量窃取。
+ * 透传账号令牌（JWT）：管理员可见完整 JWT。
+ * 现在只有 GET /accountDetail 会用到它——列表接口不再下发凭据，凭据按需取。
+ * 该接口由 adminKeyVerify 保护，能读到详情的人本就持有管理密钥；
+ * 管理后台需要完整令牌来排障与迁移账号（复制令牌），掩码只会让「复制」变成复制一串圆点。
  * 令牌不会被前端回传（新增账号用 email+password 重新登录，编辑代理/刷新仅用 email），
- * 故掩码不会破坏任何回写流程；账号仍可通过 email 区分，刷新是否成功可由 expires 变化判断。
+ * 故完整返回不会引入额外的回写风险。
  * @param {string|null|undefined} token 原始 JWT
- * @returns {string} 存在令牌时返回掩码占位符，否则返回空串
+ * @returns {string} 原始令牌，缺失时返回空串
  */
-const maskAccountToken = (token) => (token ? ACCOUNT_TOKEN_MASK : '')
+const exposeAccountToken = (token) => (token || '')
 
 /**
  * 获取所有账号（分页）
+ *
+ * 只返回列表需要的字段（email / expires / proxy / disabled）：密码与 JWT 走
+ * GET /accountDetail 按需取，避免一次拉全量账号时把每个账号的凭据塞进同一个响应。
  *
  * @param {number} page 页码
  * @param {number} pageSize 每页数量
@@ -300,13 +303,23 @@ router.get('/getAllAccounts', adminKeyVerify, async (req, res) => {
     const paginatedAccounts = allAccounts.slice(start, start + pageSize)
 
     // 获取每个账号的详细信息
+    // 列表刻意**不下发** password / token：凭据只在「账号详情」里按需取
+    // （GET /accountDetail）。一次拉全量账号时把每个 JWT 一起塞进响应既没必要，
+    // 也让响应体大一个量级。
     const accounts = paginatedAccounts.map(account => {
+      // 浏览器会话（baxia 指纹）状态：没有它上游必然拒请求，所以列表要能一眼看出来。
+      // usable/unavailableCode 是「真的能发请求吗」的结论，不是健康状态（那是另一列）。
+      const usability = describeAccountUsability(account)
       return {
         email: account.email,
-        password: account.password,
-        token: maskAccountToken(account.token),
         expires: account.expires,
-        proxy: account.proxy ?? null
+        proxy: account.proxy ?? null,
+        disabled: account.disabled === true,
+        hasFingerprint: usability.hasFingerprint,
+        fingerprintAt: usability.fingerprintAt,
+        viaGlobalFingerprint: usability.viaGlobal,
+        usable: usability.usable,
+        unavailableCode: usability.unavailableCode
       }
     })
 
@@ -364,6 +377,11 @@ router.post('/setAccount', adminKeyVerify, async (req, res) => {
     const success = await saveAccounts(email, password, authToken, expires, normalizedProxy)
 
     if (success) {
+      // 新账号先返回，浏览器会话（baxia 指纹）在后台补：服务器部署时用户不需要本机 Chrome。
+      // 失败只记日志——账号本身是好的，面板上会显示「缺会话」并给出重试按钮。
+      provisionProfile(email, { password, proxy: normalizedProxy })
+        .then(() => logger.success(`新账号 ${email} 的浏览器会话已自动生成`, 'ACCOUNT'))
+        .catch(error => logger.warn(`新账号 ${email} 自动生成浏览器会话失败: ${error.message}`, 'ACCOUNT'))
       res.status(200).json({
         email,
         message: '账号创建成功'
@@ -374,6 +392,46 @@ router.post('/setAccount', adminKeyVerify, async (req, res) => {
   } catch (error) {
     logger.error('创建账号失败', 'ACCOUNT', '', error)
     res.status(500).json({ error: error.message })
+  }
+})
+
+/**
+ * POST /provisionFingerprint
+ * 为账号生成浏览器会话（baxia 指纹）。
+ *
+ * 服务器部署的关键：采集不需要用户本机 Chrome。服务端起一个临时 profile 的无头
+ * Chrome，在页面里用账号邮箱/密码登录 chat.qwen.ai（登录请求带 baxia 指纹），
+ * 页面用服务端下发的 refresh_token 换 access_token，然后采 cookie + bx-ua 写文件。
+ *
+ * 耗时 3~15 秒；同一个账号并发调用会共享同一次采集，不同账号之间串行排队。
+ *
+ * @param {string} email 账号邮箱
+ * @returns {Object} { ok, email, fingerprintAt, hasFingerprint }
+ */
+router.post('/provisionFingerprint', adminKeyVerify, async (req, res) => {
+  const email = String((req.body && req.body.email) || '').trim()
+  if (!email) return res.status(400).json({ error: '缺少邮箱' })
+
+  const account = accountManager.accountTokens.find(item => item.email === email)
+  if (!account) return res.status(404).json({ error: '账号不存在' })
+
+  try {
+    // 手动点按钮要能立刻重试：清掉「请求时自动自愈」留下的冷却
+    clearProvisionBackoff(email)
+    await provisionProfile(email, account)
+    const usability = describeAccountUsability(account)
+    res.json({
+      ok: true,
+      email,
+      hasFingerprint: usability.hasFingerprint,
+      fingerprintAt: usability.fingerprintAt
+    })
+  } catch (error) {
+    const message = (error && error.message) || '生成浏览器会话失败'
+    logger.warn(`为账号 ${email} 生成浏览器会话失败: ${message}`, 'ACCOUNT')
+    // 配置类问题（没密码/没 Chrome/二进制没有 scripts）返回 400，其余当 500
+    const configProblem = /没有保存密码|找不到 Chrome|找不到采集脚本|禁用了浏览器采集/.test(message)
+    res.status(configProblem ? 400 : 500).json({ error: message })
   }
 })
 
@@ -487,6 +545,105 @@ router.get('/batchTasks/:taskId', adminKeyVerify, async (req, res) => {
   }
 
   res.json(getBatchTaskSnapshot(task))
+})
+
+/**
+ * GET /accountDetail
+ * 单个账号的完整信息（含密码与完整 JWT）。
+ *
+ * 列表接口刻意不下发凭据，只有用户真的打开某个账号的详情面板时才走这里：
+ * 凭据按需取，比每次列表都把所有 JWT 一起传一遍暴露面更小，响应也更轻。
+ *
+ * @query {string} email 邮箱
+ * @returns {Object} { email, password, token, expires, proxy, disabled, stats }
+ */
+router.get('/accountDetail', adminKeyVerify, async (req, res) => {
+  try {
+    const email = String(req.query.email || '').trim()
+    if (!email) {
+      return res.status(400).json({ error: '邮箱不能为空' })
+    }
+
+    const account = accountManager.getAllAccountKeys().find(item => item.email === email)
+    if (!account) {
+      return res.status(404).json({ error: '账号不存在' })
+    }
+
+    res.json({
+      email: account.email,
+      password: account.password ?? '',
+      token: exposeAccountToken(account.token),
+      expires: account.expires ?? null,
+      proxy: account.proxy ?? null,
+      disabled: account.disabled === true,
+      stats: account.stats ?? null
+    })
+  } catch (error) {
+    logger.error('获取账号详情失败', 'ACCOUNT', '', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/**
+ * POST /setAccountDisabled
+ * 手动启用/禁用账号：禁用后不再进入轮换队列（账号与统计保留）。
+ *
+ * @param {string} email 邮箱
+ * @param {boolean} disabled true = 禁用
+ * @returns {Object} 更新结果
+ */
+router.post('/setAccountDisabled', adminKeyVerify, async (req, res) => {
+  try {
+    const { email, disabled } = req.body
+
+    if (!email) {
+      return res.status(400).json({ error: '邮箱不能为空' })
+    }
+
+    const exists = accountManager.accountTokens.find(item => item.email === email)
+    if (!exists) {
+      return res.status(404).json({ error: '账号不存在' })
+    }
+
+    const next = disabled === true
+    const success = await accountManager.setAccountDisabled(email, next)
+
+    if (success) {
+      res.json({
+        message: next ? '账号已禁用' : '账号已启用',
+        email,
+        disabled: exists.disabled === true
+      })
+    } else {
+      res.status(500).json({ error: '更新账号禁用状态失败' })
+    }
+  } catch (error) {
+    logger.error('更新账号禁用状态失败', 'ACCOUNT', '', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/**
+ * GET /exportAccounts
+ * 导出全部账号凭据，格式与 ACCOUNTS 环境变量一致（email:password[|proxy]），
+ * 可直接粘回去做批量导入。
+ *
+ * 列表接口已经不下发凭据，所以导出必须走服务端，而不是前端拼字符串。
+ */
+router.get('/exportAccounts', adminKeyVerify, async (req, res) => {
+  try {
+    const lines = accountManager.getAllAccountKeys().map(account => {
+      const credentials = `${account.email}:${account.password ?? ''}`
+      return account.proxy ? `${credentials}|${account.proxy}` : credentials
+    })
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+    res.setHeader('Content-Disposition', 'attachment; filename="qwen2api-accounts.txt"')
+    res.send(lines.join('\n'))
+  } catch (error) {
+    logger.error('导出账号失败', 'ACCOUNT', '', error)
+    res.status(500).json({ error: error.message })
+  }
 })
 
 /**

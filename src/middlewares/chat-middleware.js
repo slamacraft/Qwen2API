@@ -58,6 +58,15 @@ const processRequestBody = async (req, res, next) => {
       tool_choice           // 工具调用控制
     } = req.body
 
+    // 原始消息留一份：会话复用（utils/session-reuse.js）要按客户端历史算增量，
+    // 而下面会把 messages 折叠/改写成发给上游的形态（会原地改 content/media），
+    // 所以必须是**深拷贝**——浅拷贝共享同一个对象，存下来的"客户端历史"会被改掉。
+    try {
+      req.raw_messages = Array.isArray(messages) ? JSON.parse(JSON.stringify(messages)) : []
+    } catch (_) {
+      req.raw_messages = Array.isArray(messages) ? messages.slice() : []
+    }
+
     // 先做 MODEL_MAP 映射，再判定 thinking / chat_type：目标 id 的 -thinking 后缀要照常生效
     model = await mapIncomingModel(model)
 

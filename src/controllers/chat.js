@@ -2,6 +2,26 @@ const { isJson, generateUUID } = require('../utils/tools.js')
 const { createUsageObject, mergeUpstreamUsage, reportUsage } = require('../utils/precise-tokenizer.js')
 const { sendChatRequest } = require('../utils/request.js')
 const { buildContextPrefixKey } = require('../utils/context-prefix-cache.js')
+const sessionReuse = require('../utils/session-reuse.js')
+
+/** 一轮结束后把会话状态记下来（失败不影响响应）。 */
+const rememberReuseTurn = (reuse, reuseContext, responseData, req) => {
+    if (!reuse) return
+    try {
+        sessionReuse.remember({
+            key: reuse.key,
+            plan: reuse.plan,
+            accountEmail: responseData?.currentAccount?.email,
+            chatId: responseData?.chatId,
+            userMessageId: reuseContext?.userMessageId,
+            assistantMessageId: reuseContext?.assistantMessageId,
+            raw: req.raw_messages,
+            finished: reuseContext?.finished === true
+        })
+    } catch (error) {
+        logger.warn(`会话状态记录失败: ${error.message}`, 'CHAT')
+    }
+}
 const {
     stripToolCallResidue,
     TOOL_CALL_OPEN
@@ -380,7 +400,12 @@ const handleOpenAIAgentStream = async (
     }
 
     const liveReasoningByAttempt = new Map()
-    const onReasoningDelta = enableThinking && !config.legacyReasoningInContent
+    // 思考过程要**边生成边推给客户端**，不要等整轮结束才一次性给：
+    // `enable_thinking` 只表示我们有没有主动要求思考，不代表上游不会自己思考
+    // （qwen3.7-plus 这类模型默认就会返回 reasoning_content）。之前的条件是
+    // `enableThinking && ...`，于是没开思考开关时思考内容被憋到最后一次性交付，
+    // 表现出来就是「思考过程不是流式的、要等回答完才出现」。
+    const onReasoningDelta = !config.legacyReasoningInContent
         ? async (text, metadata = {}) => {
             const attemptNumber = Math.max(1, Number(metadata.attemptNumber) || 1)
             if (!liveReasoningByAttempt.has(attemptNumber)) {
@@ -686,6 +711,15 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
             const decodeJson = isJson(dataContent) ? JSON.parse(dataContent) : null
             if (decodeJson === null) return
             assertNoUpstreamFailure(decodeJson, upstreamResponse)
+
+            // 会话复用：首帧 response.created 同时给出这条 user 消息的 id（parent_id，
+            // 分叉重生成的锚点）和本轮 assistant 消息的 id（response_id，下一轮的 parent）
+            const createdFrame = decodeJson['response.created']
+            if (createdFrame && options.upstream_context) {
+                if (createdFrame.parent_id) options.upstream_context.userMessageId = createdFrame.parent_id
+                if (createdFrame.response_id) options.upstream_context.assistantMessageId = createdFrame.response_id
+            }
+
             // 丢弃其余候选回答的帧：上游多路并发会让内容重复
             if (!acceptUpstreamFrame(decodeJson)) return
 
@@ -695,6 +729,10 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
             if (!decodeJson.choices || decodeJson.choices.length === 0) return
 
             const choice = decodeJson.choices[0]
+            // 只有上游明确 finished 的回合才算"可续用"；被截断/中断的记成 badTurn
+            if (choice?.delta?.status === 'finished' && options.upstream_context) {
+                options.upstream_context.finished = true
+            }
             const reportedFinishReason = choice.finish_reason ?? choice.delta?.finish_reason
             if (reportedFinishReason !== undefined && reportedFinishReason !== null) {
                 upstreamFinishReason = reportedFinishReason
@@ -982,6 +1020,15 @@ const handleNonStreamResponse = async (res, response, enable_thinking, enable_we
             const decodeJson = isJson(dataContent) ? JSON.parse(dataContent) : null
             if (decodeJson === null) return
             assertNoUpstreamFailure(decodeJson, upstreamResponse)
+
+            // 会话复用：首帧 response.created 同时给出这条 user 消息的 id（parent_id，
+            // 分叉重生成的锚点）和本轮 assistant 消息的 id（response_id，下一轮的 parent）
+            const createdFrame = decodeJson['response.created']
+            if (createdFrame && options.upstream_context) {
+                if (createdFrame.parent_id) options.upstream_context.userMessageId = createdFrame.parent_id
+                if (createdFrame.response_id) options.upstream_context.assistantMessageId = createdFrame.response_id
+            }
+
             // 丢弃其余候选回答的帧：上游多路并发会让内容重复
             if (!acceptUpstreamFrame(decodeJson)) return
 
@@ -990,6 +1037,10 @@ const handleNonStreamResponse = async (res, response, enable_thinking, enable_we
             if (!decodeJson.choices || decodeJson.choices.length === 0) return
 
             const choice = decodeJson.choices[0]
+            // 只有上游明确 finished 的回合才算"可续用"；被截断/中断的记成 badTurn
+            if (choice?.delta?.status === 'finished' && options.upstream_context) {
+                options.upstream_context.finished = true
+            }
             const reportedFinishReason = choice.finish_reason ?? choice.delta?.finish_reason
             if (reportedFinishReason !== undefined && reportedFinishReason !== null) {
                 upstreamFinishReason = reportedFinishReason
@@ -1207,6 +1258,20 @@ const handleChatCompletion = async (req, res) => {
                 firstMessage: requestMessages.find(message => message?.role !== 'system') ?? null
             })
         }
+        // 会话复用：已有会话续用/分叉（只发增量），新会话按「最少使用」选号
+        const reuse = sessionReuse.planForRequest(req)
+        const reuseContext = {}
+        if (reuse) {
+            if (reuse.plan.mode !== 'new' && sessionReuse.applyDelta(req, reuse.plan)) {
+                upstreamOptions.chatId = reuse.plan.chatId
+                upstreamOptions.parentId = reuse.plan.parentId
+                logger.chat(
+                    `会话复用：${reuse.plan.mode === 'branch' ? '分叉重生成' : '续用会话'}（chat=${reuse.plan.chatId}，增量 ${(req.raw_messages || []).length - reuse.plan.deltaStart} 条）`,
+                    'CHAT'
+                )
+            }
+            if (reuse.account) upstreamOptions.currentAccount = reuse.account
+        }
         const response_data = await sendChatRequest(req.body, upstreamOptions)
 
         if (!response_data.status || !response_data.response) {
@@ -1241,11 +1306,9 @@ const handleChatCompletion = async (req, res) => {
                 currentAccount: response_data.currentAccount,
                 upstreamOptions,
                 upstream_request_body: response_data.requestBody,
-                upstream_context: {
-                    chatId: response_data.chatId,
-                    parentId: response_data.parentId
-                }
+                upstream_context: Object.assign(reuseContext, { chatId: response_data.chatId, parentId: response_data.parentId })
             })
+            rememberReuseTurn(reuse, reuseContext, response_data, req)
         } else {
             setResponseHeaders(res, false)
             await handleNonStreamResponse(res, response_data.response, enable_thinking, enable_web_search, model, req.body, {
@@ -1260,11 +1323,9 @@ const handleChatCompletion = async (req, res) => {
                 currentAccount: response_data.currentAccount,
                 upstreamOptions,
                 upstream_request_body: response_data.requestBody,
-                upstream_context: {
-                    chatId: response_data.chatId,
-                    parentId: response_data.parentId
-                }
+                upstream_context: Object.assign(reuseContext, { chatId: response_data.chatId, parentId: response_data.parentId })
             })
+            rememberReuseTurn(reuse, reuseContext, response_data, req)
         }
 
     } catch (error) {

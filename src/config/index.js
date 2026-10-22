@@ -145,6 +145,24 @@ const config = {
     // Antidetect Tier 1: per-account fingerprint & header diversity.
     // Set to 'false' to instantly roll back to legacy static headers.
     antidetectTier1Enabled: process.env.ANTIDETECT_TIER1_ENABLED !== 'false',
+    // 浏览器指纹（baxia 凭证）文件路径。留空 = <runtime>/data/browser-profile.<email>.json
+    // （单账号部署可沿用 data/browser-profile.json 作全局兜底）。
+    // 由 scripts/harvest-browser-profile.mjs 从真实浏览器采集；文件不存在时该机制自动关闭。
+    browserProfilePath: process.env.BROWSER_PROFILE_PATH || '',
+    // 采集脚本连接的 Chrome 调试端口（Chrome 需带 --remote-debugging-port 启动）
+    chromeDebugPort: Math.max(1, parseInt(process.env.CHROME_DEBUG_PORT, 10) || 9333),
+    // Chrome 可执行文件路径由采集脚本自己读 CHROME_PATH（scripts/harvest-browser-profile.mjs
+    // 的 --chrome / CHROME_PATH），代理进程不再直接拉起浏览器。
+    // 请求头 Version（线上前端版本）。指纹文件里记录的版本优先；这里是没有指纹文件时的兜底。
+    qwenWebVersion: process.env.QWEN_WEB_VERSION || '0.3.20',
+    // 选号策略：priority（默认）= 按顺序取第一个可用账号，额度耗尽/冷却才换下一个；
+    // balanced = 最少使用优先，请求在账号之间均摊（旧行为）。
+    accountRotation: process.env.ACCOUNT_ROTATION === 'balanced' ? 'balanced' : 'priority',
+    // 会话复用：把客户端会话映射到上游 Qwen 会话，续聊只发增量（省 token、保住上下文）。
+    // 出问题可以 SESSION_REUSE_ENABLED=false 一键退回"每轮全量重放"。
+    sessionReuseEnabled: process.env.SESSION_REUSE_ENABLED !== 'false',
+    sessionReuseTtlSeconds: Math.max(60, parseInt(process.env.SESSION_REUSE_TTL_SECONDS, 10) || 1800),
+    sessionReuseMaxEntries: Math.max(1, parseInt(process.env.SESSION_REUSE_MAX_ENTRIES, 10) || 200),
     // Anthropic SSE `ping` cadence during upstream silence. Lower it if a client
     // or reverse proxy gives up sooner than this; the compensation retry can hold
     // the stream for tens of seconds with nothing else to send.

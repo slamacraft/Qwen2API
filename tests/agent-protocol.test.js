@@ -2214,3 +2214,27 @@ test('OpenAI non-stream sin herramientas: el reintento nunca produce tool_calls 
     'un cliente que no declaro herramientas no puede recibir tool_calls')
   assert.notEqual(body.choices[0].finish_reason, 'tool_calls')
 })
+
+// ---------------------------------------------------------------------------
+// 思考内容必须**实时**下发，不能等整轮结束
+// ---------------------------------------------------------------------------
+// 2026-10-22 用户反馈：「思考过程不是流式的，要等对话全部完成才显示」。
+// 根因：工具轮（Agent 运行时）的 on_reasoning_delta 被 `enableThinking &&` 挡住了。
+// enable_thinking 只表示我们有没有主动要求思考；qwen3.7-plus 这类模型默认就会返回
+// reasoning_content，于是思考被憋到轮末随最终交付一起发出。
+// 这里钉住的是「别再把它绑回 enable_thinking」——运行时的实时通道
+// （openai-agent-runtime.js 的 emitReasoningDelta）只有在回调存在时才会写帧。
+test('工具轮的思考内容实时下发，不依赖 enable_thinking 开关', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const source = fs.readFileSync(path.join(__dirname, '../src/controllers/chat.js'), 'utf8')
+  assert.ok(
+    !/const onReasoningDelta = enableThinking\s*&&/.test(source),
+    '思考下发又被绑回 enableThinking 了：模型自己思考时（enable_thinking=false）客户端会等整轮结束才看到思考内容'
+  )
+  assert.match(
+    source,
+    /const onReasoningDelta = !config\.legacyReasoningInContent/,
+    '实时思考回调要保留 legacyReasoningInContent 的保护（那个模式下思考并进正文，不能重复发）'
+  )
+})

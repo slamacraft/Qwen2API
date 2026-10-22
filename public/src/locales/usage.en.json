@@ -1,0 +1,100 @@
+{
+  "usage": {
+    "title": "Usage",
+    "subtitle": "Daily chat / CLI token consumption across accounts. History is kept for 90 days.",
+    "range": "Range {from} ~ {to} · {days} days",
+    "period": {
+      "currentMonth": "This month",
+      "prevMonth": "Last month",
+      "last90": "Last 90 days"
+    },
+    "actions": {
+      "refresh": "Refresh",
+      "exportDaily": "Export daily",
+      "exportAccounts": "Export accounts"
+    },
+    "kpi": {
+      "total": "Total tokens",
+      "today": "Tokens today",
+      "cliCalls": "CLI calls",
+      "activeAccounts": "Active accounts",
+      "trackedDays": "Days with data",
+      "avgDaily": "Avg tokens / day",
+      "inOut": "in {input} · out {output}",
+      "ofAccounts": "{n} accounts in total",
+      "rangeDays": "{n} days in range",
+      "perActiveDay": "over {n} active days",
+      "vsPrev": "vs previous period",
+      "vsYesterday": "vs yesterday",
+      "noPrev": "No comparable data"
+    },
+    "chart": {
+      "title": "Daily token trend",
+      "subtitle": "Stacked bars: chat / CLI input and output, with peak and average reference lines",
+      "chatInput": "Chat input",
+      "chatOutput": "Chat output",
+      "cliInput": "CLI input",
+      "cliOutput": "CLI output",
+      "total": "Total",
+      "peak": "Peak",
+      "mean": "Avg / day",
+      "peakDay": "Peak {date}",
+      "empty": "No token usage recorded in this range"
+    },
+    "table": {
+      "title": "Compare by account",
+      "subtitle": "Click a row to open that account's trend",
+      "account": "Account",
+      "input": "Input",
+      "output": "Output",
+      "total": "Total",
+      "share": "Share",
+      "avgDaily": "Avg / day",
+      "peakDay": "Peak day",
+      "change": "Change",
+      "empty": "No account usage in this range",
+      "sortHint": "Click a column header to sort",
+      "noData": "No data",
+      "summary": "{n} accounts · total {total}"
+    },
+    "drill": {
+      "title": "Account trend: {email}",
+      "total": "Total tokens",
+      "avg": "Avg / day",
+      "peak": "Peak day",
+      "activeDays": "Active days",
+      "empty": "This account has no usage in this range",
+      "export": "Export account"
+    },
+    "status": {
+      "loadFailed": "Failed to load usage data",
+      "exported": "Exported {file}",
+      "exportEmpty": "Nothing to export in this range"
+    },
+    "empty": {
+      "title": "No usage to report yet",
+      "hint": "Once accounts handle chat or CLI calls, daily token consumption will appear here."
+    },
+    "unit": {
+      "k": "K",
+      "m": "M"
+    },
+    "csv": {
+      "date": "Date",
+      "account": "Account",
+      "chatInput": "Chat input",
+      "chatOutput": "Chat output",
+      "cliCalls": "CLI calls",
+      "cliInput": "CLI input",
+      "cliOutput": "CLI output",
+      "total": "Total",
+      "share": "Share",
+      "avgDaily": "Avg / day",
+      "peakDay": "Peak day",
+      "peak": "Peak",
+      "change": "Change",
+      "input": "Input",
+      "output": "Output"
+    }
+  }
+}

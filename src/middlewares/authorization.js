@@ -71,6 +71,7 @@ const adminKeyVerify = (req, res, next) => {
 
 const HEAVY_ENDPOINT_PATHS = [
   '/v1/chat/completions',
+  '/v1/responses',
   '/v1/images/generations',
   '/v1/images/edits',
   '/v1/videos',

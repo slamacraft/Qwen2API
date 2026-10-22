@@ -1,33 +1,23 @@
 <template>
-  <video id="video-background" autoplay loop muted>
-    <source src="./assets/background.mp4" type="video/mp4">
-  </video>
-
   <router-view></router-view>
-
+  <ToastHost />
 </template>
 
 <script setup>
+import ToastHost from './components/ui/ToastHost.vue'
 </script>
 
-<style lang="css" scoped>
+<style>
+html,
 body,
-html {
+#app {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden;
-  position: relative;
 }
 
-#video-background {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: -1000;
-  object-fit: cover;
+body {
+  overflow: hidden;
 }
 </style>

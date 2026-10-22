@@ -21,6 +21,7 @@ Qwen-Proxy is a proxy service that converts `https://chat.qwen.ai` and `Qwen Cod
 **Main Features:**
 - Compatible with OpenAI API format for seamless integration with various clients
 - Compatible with Anthropic Messages API (`/v1/messages`), supporting Claude Code, Anthropic SDK, and other clients
+- Compatible with the OpenAI Responses API (`/v1/responses`), with streaming/non-streaming, reasoning and tool calling; works directly with the OpenAI SDK and Codex CLI
 - Supports Function Calling (OpenAI `tools` / Anthropic `tools`), including streaming `arguments` incremental chunks and `tool_choice=required` strict validation retry
 - Supports multi-account polling to improve availability
 - Supports streaming/non-streaming responses
@@ -125,7 +126,7 @@ CACHE_MODE=default            # Image cache mode (default/file)
 | `OUTPUT_THINK` | Whether to show AI thinking process | `true` or `false` |
 | `LEGACY_REASONING_IN_CONTENT` | Reasoning output format. Default `false` = reasoning goes to a separate `reasoning_content` field; `true` = legacy behavior (`<think>` inside `content`) | `true` or `false` |
 | `SIMPLE_MODEL_MAP` | Simplify model mapping, return basic models without variants only | `true` or `false` |
-| `MODEL_MAP` | Incoming model name mapping: `alias=qwen-id,...,*=fallback`. Exact entry wins (trailing `[..]` stripped, case-insensitive), existing Qwen ids pass through, everything else uses `*`; applies to `/v1/chat/completions` and `/v1/messages` only. Also editable at runtime in the dashboard (Settings → Model mapping); a dashboard-saved map overrides this variable, see `.env.example` | `*=qwen3.8-max-thinking` |
+| `MODEL_MAP` | Incoming model name mapping: `alias=qwen-id,...,*=fallback`. Exact entry wins (trailing `[..]` stripped, case-insensitive), existing Qwen ids pass through, everything else uses `*`; applies to `/v1/chat/completions`, `/v1/messages` and `/v1/responses` only. Also editable at runtime in the dashboard (Settings → Model mapping); a dashboard-saved map overrides this variable, see `.env.example` | `*=qwen3.8-max-thinking` |
 | `MODELS_CACHE_TTL` | Model list cache TTL in seconds; after expiry the next request refreshes it from upstream; `0` = never expires | `3600` |
 | `AGENT_TURN_MAX_TOOL_CALLS` | Anthropic path: cap on text-channel `tool_use` blocks per agent turn (4–256). When the model runs away after a narrated `[TOOL CALL]` (repeats the same call hundreds of times, hallucinates a whole session), the upstream is cut right after the N-th admitted call and the admitted calls are delivered with `stop_reason=tool_use`; once a call was admitted in an earlier delta, a duplicate, a rejected call or prose/thinking also cuts the turn | `24` |
 | `AGENT_CONTEXT_FILE_THRESHOLD_BYTES` | Externalize complete Agent tool definitions and history as a Qwen text document when the request body exceeds this size, avoiding the roughly 128 KiB WAF limit | `92160` (90 KiB) |
@@ -710,6 +711,269 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":
 event: message_stop
 data: {"type":"message_stop"}
 ```
+
+### 🔌 OpenAI Responses API
+
+Provides the `/v1/responses` endpoint for the **OpenAI Responses API**. It follows OpenAI's newer "decoupled" shape: the input is a list of `input` items, the output is a list of `output` items, and a streaming response is a series of `response.*` events. This endpoint is independent of `/v1/chat/completions` and the two can coexist; clients that speak the protocol, such as the official OpenAI SDK's `client.responses.create()` and Codex CLI, can connect directly.
+
+```http
+POST /v1/responses
+Content-Type: application/json
+Authorization: Bearer sk-your-api-key
+```
+
+**Request example (streaming):**
+
+```bash
+curl -N http://localhost:3000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{
+    "model": "qwen3.7-plus",
+    "input": "Explain what a vector database is in one sentence.",
+    "instructions": "You are a concise assistant. Answer in no more than three sentences.",
+    "stream": true,
+    "max_output_tokens": 1024,
+    "temperature": 0.7,
+    "reasoning": { "effort": "medium" }
+  }'
+```
+
+**Ways to pass `input`:**
+
+A plain string, equivalent to a single user message:
+
+```json
+{ "input": "Hello" }
+```
+
+An array of messages, where `content` can be a string or an array of parts:
+
+```json
+{
+  "input": [
+    { "role": "user", "content": "Hello" }
+  ]
+}
+```
+
+```json
+{
+  "input": [
+    { "role": "user", "content": [{ "type": "input_text", "text": "Hello" }] }
+  ]
+}
+```
+
+A tool result, normally sent back together with the `function_call` item from the previous turn:
+
+```json
+{
+  "input": [
+    { "type": "function_call", "call_id": "call_xxx", "name": "get_time", "arguments": "{}" },
+    { "type": "function_call_output", "call_id": "call_xxx", "output": "{\"time\":\"12:00\"}" }
+  ]
+}
+```
+
+**Request fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `model` | string | Model ID, same values as the `id` returned by `/v1/models` |
+| `input` | string \| array | A string or an array of items, see above |
+| `instructions` | string | Equivalent to `system`, prepended to the conversation |
+| `stream` | boolean | `true` returns an SSE event stream, default `false` |
+| `max_output_tokens` | number | Upper bound on the output length |
+| `temperature` / `top_p` | number | Sampling parameters |
+| `tools[]` | array | Function tools shaped as `{type:"function",name,description,parameters}` (one less `function` wrapper than `/v1/chat/completions`) |
+| `tool_choice` | string \| object | `auto` / `required` / `none`, or `{type:"function",name:"..."}` to pin a function |
+| `reasoning.effort` | string | `none` / `minimal` disables reasoning, any other value enables it |
+| `user` | string | End-user identifier, forwarded with the request |
+
+**Non-streaming request:**
+
+```json
+{
+  "model": "qwen3.7-plus",
+  "input": "Hello",
+  "instructions": "Answer in a single word, with no explanation."
+}
+```
+
+**Non-streaming response:**
+
+```json
+{
+  "id": "resp_d2beb5aef96b4826a58e36a920630467",
+  "object": "response",
+  "created_at": 1792661279,
+  "status": "completed",
+  "model": "qwen3.7-plus",
+  "output": [
+    {
+      "id": "rs_2c68fffeb3e34ebe8d8b9c0f81677704",
+      "type": "reasoning",
+      "summary": [
+        { "type": "summary_text", "text": "I reviewed the user's explicit request: answer in a single word.……" }
+      ]
+    },
+    {
+      "id": "msg_f2f5eeb079c14b83a8bb0f91591b3f03",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        { "type": "output_text", "text": "Hello", "annotations": [] }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 1236,
+    "output_tokens": 84,
+    "total_tokens": 1320,
+    "input_tokens_details": { "cached_tokens": 0 },
+    "output_tokens_details": { "reasoning_tokens": 0 }
+  },
+  "error": null,
+  "incomplete_details": null
+}
+```
+
+`output` is an array of items; three kinds may appear, in order:
+
+- `reasoning`: the reasoning summary, with the text in `summary[0].text`
+- `message`: the actual answer, with the text in `content[0].text` (`type` is `output_text`)
+- `function_call`: a tool call with `call_id` / `name` / `arguments`, where `arguments` is a JSON string
+
+**Tool calling (multi-turn):**
+
+`tools[]` uses the flat Responses shape. First request:
+
+```json
+{
+  "model": "qwen3-coder-plus",
+  "input": "What time is it?",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_time",
+      "description": "Return the current time",
+      "parameters": { "type": "object", "properties": {} }
+    }
+  ]
+}
+```
+
+The response `output` contains a `function_call` item:
+
+```json
+{
+  "id": "fc_xxx",
+  "type": "function_call",
+  "status": "completed",
+  "call_id": "call_abc123",
+  "name": "get_time",
+  "arguments": "{}"
+}
+```
+
+Send the call and its result back in `input` for the second turn to get a normal answer:
+
+```json
+{
+  "model": "qwen3-coder-plus",
+  "input": [
+    { "type": "function_call", "call_id": "call_abc123", "name": "get_time", "arguments": "{}" },
+    { "type": "function_call_output", "call_id": "call_abc123", "output": "{\"time\":\"2026-10-22 17:30\"}" }
+  ]
+}
+```
+
+The second turn returned a normal assistant message in testing. Tool calls are parsed server-side, so clients only ever see standard `function_call` items, never the internal protocol text.
+
+**Streaming events (excerpt):**
+
+```
+event: response.created
+data: {"type":"response.created","response":{...}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{...}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_xxx","type":"reasoning","summary":[]}}
+
+event: response.reasoning_summary_part.added
+data: {"type":"response.reasoning_summary_part.added","item_id":"rs_xxx","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_xxx","output_index":0,"summary_index":0,"delta":"First explain"}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_xxx","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","item_id":"msg_xxx","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_xxx","output_index":1,"content_index":0,"delta":"A vector database"}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","item_id":"msg_xxx","output_index":1,"content_index":0,"part":{"type":"output_text","text":"A vector database encodes…","annotations":[]}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_xxx","type":"message","status":"completed","role":"assistant","content":[...]}}
+
+event: response.completed
+data: {"type":"response.completed","response":{...}}
+```
+
+**Event order:**
+
+1. `response.created` → `response.in_progress`
+2. With reasoning: `response.output_item.added` (reasoning) → `response.reasoning_summary_part.added` → `response.reasoning_summary_text.delta` × N → `response.reasoning_summary_text.done` → `response.reasoning_summary_part.done` → `response.output_item.done` (reasoning)
+3. The answer: `response.output_item.added` (message) → `response.content_part.added` → `response.output_text.delta` × N → `response.output_text.done` → `response.content_part.done` → `response.output_item.done` (message)
+4. With tool calls: `response.output_item.added` (function_call) → `response.function_call_arguments.delta` × N → `response.function_call_arguments.done` → `response.output_item.done`
+5. End: `response.completed`; on failure it becomes `response.failed`
+6. There is no `[DONE]` sentinel: use `response.completed` / `response.failed` to detect the end of the stream
+
+**Differences from `/v1/chat/completions`:**
+
+| Aspect | `/v1/chat/completions` | `/v1/responses` |
+|---|---|---|
+| Input | `messages[]`, system via `role:"system"` | `input` (string or item array), system via `instructions` |
+| Tool definition | `{type:"function",function:{name,...}}` | `{type:"function",name,...}` (one less `function` level) |
+| Tool result | `role:"tool"` + `tool_call_id` | `{type:"function_call_output",call_id,output}` item |
+| Output | `choices[0].message.content` | `output[]` item array (`reasoning` / `message` / `function_call`) |
+| Usage | `prompt_tokens` / `completion_tokens` / `total_tokens` | `input_tokens` / `output_tokens` / `total_tokens`, plus `input_tokens_details` / `output_tokens_details` |
+| Streaming | `data: {"choices":[{"delta":...}]}`, ends with `[DONE]` | `event: response.*` + `data: {"type":...}`, ends with `response.completed` |
+
+**Client integration:**
+
+The official OpenAI Python SDK works out of the box:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:3000/v1", api_key="sk-your-api-key")
+
+resp = client.responses.create(
+    model="qwen3.7-plus",
+    input="Explain what a vector database is in one sentence.",
+)
+print(resp.output_text)
+```
+
+For Codex CLI, point a custom provider at `http://localhost:3000/v1` with `wire_api = "responses"` in `~/.codex/config.toml` (see the Codex CLI docs for the exact keys).
+
+**Notes:**
+
+- The Responses path is text-only for now: non-text `content` parts such as images and videos are ignored, so keep using `/v1/chat/completions` for multimodal input
+- `input_tokens_details.cached_tokens` and `output_tokens_details.reasoning_tokens` in `usage` are currently always `0` (that granularity is not exposed yet)
+- `tools[]` only accepts `type:"function"`; built-in tools such as `web_search` and `file_search` are not supported yet
+- An invalid body returns `400`: empty `input` (`code` is `invalid_input`) or missing `model` (`code` is `invalid_model`); upstream failures return `502` or the upstream status code, with a uniform `{"error":{"message","type","code","param"}}` body
+- A failed stream ends with `response.failed`, where `response.status` is `failed` and `error` carries `code` / `message`
 
 ### 🎨 Image and Video Generation
 
