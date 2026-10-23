@@ -32,83 +32,102 @@ Qwen-Proxy is a proxy service that converts `https://chat.qwen.ai` and `Qwen Cod
 - Provides web management interface for easy configuration and monitoring
 - Batch account addition supports real-time progress display, adjustable login concurrency in system settings
 
-### ⚡ One-command deploy and service management (Bun source, recommended)
+### 🚀 Step-by-step deployment and service management (Bun source, recommended)
 
-This project is **Bun-first**: the repository only ships `bun.lock` (one at the root and one in `public/`), and both `packageManager` and `engines` require `bun >= 1.3.14`. npm/pnpm resolve dependencies on the fly and drift away from the lockfile, so **running from source with Bun is recommended** (it is also the run mode in which the browser session renews automatically; the standalone binary ships without the harvest script — see "Standalone executable").
+This project is **Bun-first**: the repository ships only `bun.lock` (one at the root and one in `public/`), and both `packageManager` and `engines` require `bun >= 1.3.14`. npm/pnpm resolve dependencies on the fly and drift away from the lockfile, so **running from source with Bun is recommended** (it is also the run mode in which the browser session renews automatically; the standalone binary ships without the collection script — for renewal, see "Standalone executable").
 
-**Prerequisites**
+Do the steps below in order; each one can be verified on its own.
 
-- Linux (x64 / arm64) or macOS with access to `chat.qwen.ai`
-- [Bun](https://bun.sh) `>= 1.3.14`
-- Chromium / Chrome: **strongly recommended**. Login-state renewal has to happen inside a headless browser; without it the upstream starts rejecting requests once the access token expires after 15 minutes
+#### 1. Install Bun
 
 ```bash
-sudo apt install -y chromium            # Debian/Ubuntu
-# the script auto-detects /usr/bin/chromium and google-chrome; if it cannot find them, set CHROME_PATH=/usr/bin/chromium in .env
+curl -fsSL https://bun.sh/install | bash
+exec $SHELL                 # put ~/.bun/bin on PATH
+bun --version               # must be >= 1.3.14
 ```
 
-**Deploy / update script (safe to re-run)**
-
-Save it as `deploy.sh` and run it as **root** (`sudo bash deploy.sh`): the first run clones and initializes, later runs are just “update + restart”. At the end the script hands directory ownership to the service user configured in systemd.
+#### 2. Get the code
 
 ```bash
-#!/usr/bin/env bash
-# qwen2api deploy and update script: used for both the first deployment and later updates, safe to re-run.
-# run it as root: sudo bash deploy.sh
-set -euo pipefail
-
-APP_DIR="${APP_DIR:-/opt/qwen2api}"      # deployment directory
-REPO="${REPO:-https://github.com/Rfym21/Qwen2API.git}"
-SERVICE="${SERVICE:-qwen2api}"           # systemd service name
-RUN_USER="${RUN_USER:-qwen2api}"         # service run user (chown is skipped if it does not exist)
-
-# 1) Bun (install only if missing; as root it goes to /root/.bun and is used for the build)
-if ! command -v bun >/dev/null 2>&1; then
-  curl -fsSL https://bun.sh/install | bash
-  export PATH="$HOME/.bun/bin:$PATH"
-fi
-bun --version
-
-# 2) Code: clone on the first run, fast-forward pull afterwards
-if [ -d "$APP_DIR/.git" ]; then
-  git -C "$APP_DIR" pull --ff-only
-else
-  mkdir -p "$APP_DIR"
-  git clone --depth 1 "$REPO" "$APP_DIR"
-fi
-cd "$APP_DIR"
-
-# 3) Dependencies + frontend (lockfile-based, reproducible; --production skips eslint and other dev dependencies)
-bun install --frozen-lockfile --production
-bun install --cwd public --frozen-lockfile
-bun run build:frontend
-
-# 4) Config: generated only on the first run, an existing .env is never overwritten
-[ -f .env ] || cp .env.example .env
-
-# 5) Hand ownership to the service user (skipped if that user does not exist)
-if id -u "$RUN_USER" >/dev/null 2>&1; then
-  chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
-fi
-
-# 6) Restart the systemd service if it is installed, otherwise print the foreground command
-if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
-  systemctl restart "$SERVICE"
-  systemctl --no-pager --lines=10 status "$SERVICE" || true
-else
-  echo "首次部署：编辑 $APP_DIR/.env（至少填 API_KEY 和账号），然后启动："
-  echo "  cd $APP_DIR && bun run start"
-fi
+git clone https://github.com/Rfym21/Qwen2API.git
+cd Qwen2API
 ```
 
-**systemd service (start on boot + restart on crash)**
+#### 3. Install dependencies and build the frontend
 
 ```bash
-# one-time preparation: dedicated user + deployment directory + Bun under that user (used by ExecStart)
+bun install --frozen-lockfile                  # server dependencies (add --production on a production machine)
+bun install --cwd public --frozen-lockfile     # frontend dependencies (vite lives in devDependencies, do not add --production)
+bun run build:frontend                         # produces public/dist; the server reads it straight from disk
+```
+
+#### 4. Write the configuration (`.env`)
+
+```bash
+cp .env.example .env
+```
+
+**The two values you must change:**
+
+| Variable | Suggested value | Description |
+|---|---|---|
+| `API_KEY` | `sk-your-api-key` | Admin key; when it is a comma-separated list, the first one is the administrator. It is also the key used to call the API |
+| `DATA_SAVE_MODE` | `file` | **You must set `file` if you want to add accounts in the admin panel.** The default `none` is "environment-variable-only mode": changes made in the panel are never written to disk |
+
+**Commonly used optional settings:**
+
+| Variable | Description |
+|---|---|
+| `SERVICE_PORT` | Listening port, default 3000 |
+| `ACCOUNTS` | Accounts in environment-variable mode, `email:password` separated by commas; you can also write `email:password\|http://proxy`. With `file` mode just leave it empty and add accounts in the panel |
+| `CHROME_PATH` | Path to the Chrome executable; leave it empty to auto-detect `/usr/bin/chromium`, `google-chrome` per platform |
+| `PROXY_URL` | Global outbound proxy (per-account proxies are configured separately in the panel) |
+
+After editing, re-check it with `grep -E '^(API_KEY|DATA_SAVE_MODE|SERVICE_PORT)=' .env`.
+
+> With `DATA_SAVE_MODE=none` the panel still opens, but "Add account" returns 400 straight away and asks you to switch to `file` first (it used to fail silently, leaving only three unreadable log lines).
+
+#### 5. Install Chromium (required for session renewal)
+
+The access token from `chat.qwen.ai` lives for only 15 minutes, and the proxy renews it itself through a headless browser. With no browser on the server, the upstream starts rejecting requests once the token expires (`unauthorized` in the logs).
+
+```bash
+sudo apt install -y chromium        # Debian / Ubuntu; CentOS: dnf install chromium
+# after installing, confirm the path here — it must match CHROME_PATH in .env:
+command -v chromium || command -v chromium-browser || command -v google-chrome
+```
+
+#### 6. First start and verification
+
+```bash
+bun run start        # runs in the foreground, Ctrl+C to stop; equivalent to bun --no-env-file src/server.js
+```
+
+In a second terminal:
+
+```bash
+curl -s http://127.0.0.1:3000/api/health                                  # returns 200
+curl -s -H "Authorization: Bearer sk-your-api-key" http://127.0.0.1:3000/v1/models | head -c 300
+```
+
+In a browser, open `http://<server IP>:3000` → log in with the admin key → account pool → add an account. The first account is logged in through the headless browser and its session is collected automatically (3–15 s); once the "Usability" column turns green ("Usable"), you can send requests. Send one test message to confirm the whole chain:
+
+```bash
+curl -s http://127.0.0.1:3000/v1/chat/completions \
+  -H "Authorization: Bearer sk-your-api-key" -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.7-plus","messages":[{"role":"user","content":"只回答两个字：你好"}]}'
+```
+
+#### 7. Configure start on boot (optional, recommended for production)
+
+```bash
+# one-time preparation: dedicated user + directory + Bun under that user (used by ExecStart)
 sudo useradd --system --create-home --home-dir /home/qwen2api --shell /usr/sbin/nologin qwen2api
 sudo mkdir -p /opt/qwen2api
 sudo -u qwen2api -H bash -c 'curl -fsSL https://bun.sh/install | bash'
 ```
+
+Put the project in `/opt/qwen2api` (via `git clone` or `rsync`; note that `/opt/qwen2api/.env` and `data/` must be owned by `qwen2api`), then write the service unit:
 
 ```ini
 # /etc/systemd/system/qwen2api.service
@@ -122,54 +141,68 @@ Type=simple
 User=qwen2api
 WorkingDirectory=/opt/qwen2api
 Environment=PATH=/home/qwen2api/.bun/bin:/usr/local/bin:/usr/bin:/bin
-# the collection script auto-detects /usr/bin/chromium or google-chrome; set the path explicitly only if it cannot find them:
+# the collection script finds /usr/bin/chromium or google-chrome by itself; set the path explicitly only when it cannot:
 # Environment=CHROME_PATH=/usr/bin/chromium
 ExecStart=/home/qwen2api/.bun/bin/bun --no-env-file src/server.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=20
-# account stats/rate limits/session reuse are process-local state: a single instance only, do not run several
+# account statistics/rate limits/session reuse are process-local state: a single instance only, do not run several
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
+sudo chown -R qwen2api:qwen2api /opt/qwen2api
 sudo systemctl daemon-reload
 sudo systemctl enable --now qwen2api
 curl -s http://127.0.0.1:3000/api/health        # HTTP 200 means it started successfully
 ```
 
-**Update**
+#### Updating to a new version
 
 ```bash
 cd /opt/qwen2api
-git pull --ff-only                              # or simply run deploy.sh again
-bun install --frozen-lockfile --production
-bun install --cwd public --frozen-lockfile
-bun run build:frontend
-sudo systemctl restart qwen2api
+sudo systemctl stop qwen2api                             # stop first, so the build does not hang for ages
+sudo git pull --ff-only                                  # or rsync the new code over
+sudo -u qwen2api bun install --frozen-lockfile --production
+sudo -u qwen2api bun install --cwd public --frozen-lockfile
+sudo -u qwen2api bun run build:frontend
+sudo systemctl start qwen2api
 ```
 
-**Stop / restart / logs**
+Note: `data/` and `.env` are not in git, so `pull` never overwrites them — updating is safe.
+
+#### Stop / restart / logs
 
 ```bash
-sudo systemctl stop qwen2api                    # stop
-sudo systemctl restart qwen2api                 # restart
-sudo systemctl status qwen2api                  # status
-sudo journalctl -u qwen2api -f                  # live logs (Ctrl+C to exit)
+sudo systemctl stop qwen2api                     # stop
+sudo systemctl restart qwen2api                  # restart
+sudo systemctl status qwen2api                   # status
+sudo journalctl -u qwen2api -f                   # live logs (Ctrl+C to exit)
 sudo journalctl -u qwen2api --since '10 min ago' # last 10 minutes
 ```
 
-When running in the foreground, stop it with `Ctrl+C`; to keep it in the background without systemd, use `nohup bun run start > qwen2api.log 2>&1 &` and stop it with `kill <PID>`.
+When running in the foreground, stop it with `Ctrl+C`; if you do not want systemd, run `nohup bun run start > qwen2api.log 2>&1 &` to put it in the background and stop it with `kill <PID>`.
 
-**Data and backups**
+#### Data and backups
 
 - `data/`: accounts, browser session fingerprints (`browser-profile.<email>.json`), statistics — **must be backed up**
-- `.env`: keys and configuration
+- `.env`: keys and configuration — back this up too
 - `public/dist/`: frontend build output, can be rebuilt at any time
 
-To change the port, set `SERVICE_PORT` in `.env` (default 3000); before deploying multiple replicas you must first solve process-local state sharing, otherwise statistics and rate limits are counted per process.
+To change the port, set `SERVICE_PORT` in `.env`; before deploying multiple replicas you must first solve process-local state sharing, otherwise statistics and rate limits are counted per process.
+
+#### FAQ
+
+| Symptom | Cause and fix |
+|---|---|
+| Adding an account reports "save failed", and the log contains `环境变量模式不支持保存账户数据` | `DATA_SAVE_MODE` is still `none`. Change it to `file` and restart (the panel now shows this hint directly) |
+| Startup fails with `请务必设置 API_KEY 环境变量` | There is no `.env`, or you are not starting from the project root |
+| The account status column keeps showing "No session" / requests return `unauthorized` | Chromium is not installed on the server, or that account's password is wrong; click "Generate" next to the Usability column to see the actual error |
+| Port already in use | Change `SERVICE_PORT` in `.env`, or find the process with `ss -lntp \| grep 3000` |
+| The frontend page returns 404 / is blank | `bun run build:frontend` was not run, so `public/dist` does not exist |
 
 ### 🌐 Per-Account Proxy
 
@@ -372,7 +405,7 @@ docker compose pull && docker compose up -d
 
 ### 📦 Local Deployment
 
-The recommended path is the script from the ⚡ One-command deploy and service management (Bun source, recommended) section above: it is safe to re-run, and the first deployment and later updates are the same command.
+The recommended path is to walk through “🚀 Step-by-step deployment and service management” above: every step from installing Bun to configuring systemd is covered there.
 
 Minimal manual steps:
 

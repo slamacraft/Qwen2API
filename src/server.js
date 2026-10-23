@@ -28,6 +28,14 @@ if (config.dataSaveMode === 'file') {
   if (!fs.existsSync(dataFilePath)) {
     fs.writeFileSync(dataFilePath, JSON.stringify({"accounts": [] }, null, 2))
   }
+} else if (config.dataSaveMode === 'none' && !String(process.env.ACCOUNTS || '').trim()) {
+  // 环境变量模式 + 没配 ACCOUNTS：管理面板能打开，但「添加账号」永远保存不下来
+  // （data-persistence 直接返回 false）。这个组合在首次部署时太容易踩，启动就说清楚。
+  logger.warn(
+    'DATA_SAVE_MODE=none 且未设置 ACCOUNTS：管理面板里添加/修改的账号不会保存（重启即丢）。' +
+    '要在面板里管理账号，请把 .env 里的 DATA_SAVE_MODE 改成 file 后重启。',
+    'DATA'
+  )
 }
 
 // SSXMOD initialization is now lazy (per-account); no startup side effect

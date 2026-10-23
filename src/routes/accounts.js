@@ -14,6 +14,27 @@ const { provisionProfile, describeAccountUsability, clearProvisionBackoff } = re
 // 仅在 proxy 字段存在时触发；空字符串/null 一律视为"清除代理"，无需校验
 const PROXY_FORMAT_ERROR = '代理 URL 格式无效，应以 http://、https://、socks5:// 或 socks5h:// 开头'
 
+/**
+ * 环境变量模式（DATA_SAVE_MODE=none）下，任何「写账号」的操作都保存不下来：
+ * data-persistence 直接返回 false，用户只会看到「保存失败」这种查不出原因的报错。
+ * 这里提前拦下来，返回一句能照着做的说明。
+ *
+ * 注意：setAccountDisabled 不走这条 —— 它在 none 模式下本来就是「只改内存」的语义
+ * （account.js 里有明确分支），禁用/启用不该被拦。
+ *
+ * @param {import('express').Response} res
+ * @returns {boolean} true = 已经回过 400，调用方直接 return
+ */
+const rejectInEnvMode = (res) => {
+  if (config.dataSaveMode !== 'none') return false
+  res.status(400).json({
+    error: '当前是环境变量模式（DATA_SAVE_MODE=none），账号改动不会保存到磁盘。'
+      + '要在管理面板里管理账号，请把 .env 里的 DATA_SAVE_MODE 改成 file 后重启服务；'
+      + '或者直接用 ACCOUNTS 环境变量配置账号。'
+  })
+  return true
+}
+
 const batchAccountTasks = new Map()
 const BATCH_TASK_RETENTION_MS = 1000 * 60 * 30
 const BATCH_TASK_RESULT_LIMIT = 12
@@ -345,6 +366,7 @@ router.get('/getAllAccounts', adminKeyVerify, async (req, res) => {
  * @returns {Object} 账号信息
  */
 router.post('/setAccount', adminKeyVerify, async (req, res) => {
+  if (rejectInEnvMode(res)) return
   try {
     const { email, password, proxy } = req.body
 
@@ -443,6 +465,7 @@ router.post('/provisionFingerprint', adminKeyVerify, async (req, res) => {
  * @returns {Object} 账号信息
  */
 router.delete('/deleteAccount', adminKeyVerify, async (req, res) => {
+  if (rejectInEnvMode(res)) return
   try {
     const { email } = req.body
 
@@ -475,6 +498,7 @@ router.delete('/deleteAccount', adminKeyVerify, async (req, res) => {
  * @returns {Object} 添加结果统计
  */
 router.post('/setAccounts', adminKeyVerify, async (req, res) => {
+  if (rejectInEnvMode(res)) return
   try {
     let { accounts, async: asyncTask } = req.body
     if (!accounts) {
@@ -656,6 +680,7 @@ router.get('/exportAccounts', adminKeyVerify, async (req, res) => {
  * @returns {Object} 更新结果
  */
 router.post('/updateAccountProxy', adminKeyVerify, async (req, res) => {
+  if (rejectInEnvMode(res)) return
   try {
     const { email, proxy } = req.body
 

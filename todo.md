@@ -87,3 +87,14 @@
   - 优化：把这条错误从和 `tool_error` 共用的一句话改成可执行的说明——直接告诉你把 `AGENT_TURN_ALLOW_PROSE_WITH_TOOLS=true` 打开即可（`src/utils/agent-turn-gate.js`）。协议真坏（`tool_error`）仍保留原文案。
   - 规避：客户端能处理「正文 + tool_calls 同一条消息」时（OpenAI SDK / 本项目的测试会话都行），设置 `AGENT_TURN_ALLOW_PROSE_WITH_TOOLS=true` 即可；默认严格模式保留给需要干净工具轮的 agentic 客户端。
   - 说明：本机两个账号当日额度已用尽（RateLimited 冷却），修复后的**真机**复测没做，恢复额度后按 `docs/dev-state.md` 的步骤复验。
+
+## 9. 首次部署的两个坑（2026-10-23）
+
+- [x] 1) `bun run start` 后管理面板「添加账号」报「保存失败」
+  - 根因：`DATA_SAVE_MODE` 默认 `none`（纯环境变量模式），`data-persistence.saveAccount` 直接返回 false，前端只看到一句「保存失败」，日志是 `环境变量模式不支持保存账户数据` + `持久化失败，已回滚内存数据`，用户完全不知道该改什么。
+  - 修复：启动时若 `none` 且没配 `ACCOUNTS` 就打一条明确告警；`/setAccount`、`/setAccounts`、`/deleteAccount`、`/updateAccountProxy` 在 `none` 模式下直接返回 400，错误体写明「把 .env 里的 DATA_SAVE_MODE 改成 file 后重启；或用 ACCOUNTS 环境变量」。
+  - 例外：`/setAccountDisabled` **不拦** —— 它在 `none` 模式下本来就是「只改内存」的语义（`account.js` 有明确分支）。
+  - 测试：`tests/accounts-env-mode.test.js`（5 个用例，含「file 模式不再拦」和「禁用/启用不被拦」）。
+- [x] 2) README 的部署章节从「一键脚本」改成「一步一步教」
+  - 原因：脚本仍要求用户改 `.env`（API_KEY、DATA_SAVE_MODE、CHROME_PATH 等），一次性脚本反而掩盖了这些必改项。
+  - 现在按 7 步走：装 Bun → 取代码 → 装依赖+构建前端 → **写 .env（表格列出必须改的两项）** → 装 Chromium → 启动并验证（health / models / 一条改完即用的冒烟命令）→ 配 systemd；另有「更新」「停止/重启/日志」「数据与备份」「常见问题」四节，三语同步。

@@ -63,6 +63,10 @@
     - 工具调用报错「上游连续返回残缺、非法或不存在的工具调用」：Agent 门禁的**策略**结果——OpenAI 面默认 `AGENT_TURN_ALLOW_PROSE_WITH_TOOLS=false`，模型「先说一句再调用」会被判 `prose_with_tools`，重试 3 次后报错。已把这条错误改成可执行说明（告诉用户打开 `AGENT_TURN_ALLOW_PROSE_WITH_TOOLS=true`）；协议真坏的 `tool_error` 文案不动。
     - 待办：两个账号当日额度用尽（RateLimited 冷却约 1 小时），修复后的真机复测等额度恢复。
 
+13. **首次部署的两个坑（2026-10-23，详见 `todo.md` 第 9 项）**
+    - `bun run start` 后管理面板加账号报「保存失败」：根因是 `DATA_SAVE_MODE` 默认 `none`（纯环境变量模式），`saveAccount` 直接返回 false。现在启动时（`none` 且无 `ACCOUNTS`）打明确告警；`/setAccount`、`/setAccounts`、`/deleteAccount`、`/updateAccountProxy` 在 `none` 模式下直接 400 并写明「改 DATA_SAVE_MODE=file 或用 ACCOUNTS 环境变量」；`/setAccountDisabled` 不拦（本来就是只改内存）。测试：`tests/accounts-env-mode.test.js`（5 个用例）。
+    - README 部署章节从「一键 deploy.sh」改成 **7 步分步指南**（装 Bun → 取代码 → 装依赖+构建 → 写 .env（表格列出必改项）→ 装 Chromium → 启动并验证 → systemd），另加「更新 / 停止重启日志 / 数据备份 / 常见问题」，三语同步。
+
 ## 三、进行中（下一步接手）
 
 **B. CLI 通道（服务器部署的正解，未通）**
