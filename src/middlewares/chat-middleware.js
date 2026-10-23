@@ -41,6 +41,57 @@ const ensureAgentCurrentEnvelope = (content, role = 'user') => {
 }
 
 /**
+ * 把一段文本拼到 content 前面（content 可能是字符串，也可能是 content[] 数组）。
+ * 原地改数组里的文本项，和改造前逐字一致：req.parsed_messages 与 body 共享对象。
+ */
+const prependTextToContent = (content, text) => {
+    if (!text) return content
+    if (typeof content === 'string') return `${text}\n\n${content}`
+    if (Array.isArray(content)) {
+        const textIdx = content.findIndex(c => c && c.type === 'text')
+        if (textIdx >= 0) {
+            content[textIdx].text = `${text}\n\n${content[textIdx].text || ''}`
+            return content
+        }
+        content.unshift({ type: 'text', text })
+        return content
+    }
+    return content
+}
+
+/** 把一段文本拼到 content 后面（同上）。 */
+const appendTextToContent = (content, text) => {
+    if (!text) return content
+    if (typeof content === 'string') return `${content}\n\n${text}`
+    if (Array.isArray(content)) {
+        const textIdx = content.findIndex(c => c && c.type === 'text')
+        if (textIdx >= 0) {
+            content[textIdx].text = `${content[textIdx].text || ''}\n\n${text}`
+            return content
+        }
+        content.push({ type: 'text', text })
+        return content
+    }
+    return content
+}
+
+/**
+ * Agent 回合最终用户消息的唯一拼装点：`# Current message` 信封 → 前缀 → 回合指令。
+ *
+ * 顺序只有这一份实现说了算。会话复用（utils/session-reuse.js#applyDelta）在续用/分叉
+ * 时要把 content 换成"只有增量"，如果它自己覆盖一遍，toolPrompt / ledger / directive
+ * 就全丢了 —— 模型看不到工具协议，也看不到"继续同一任务"的指令，只能吐裸正文。
+ * @param {{history: unknown, prefix?: string, directive?: string, role?: string}} input
+ * @returns {unknown} 与 history 同类型的 content
+ */
+const composeAgentContent = ({ history, prefix = '', directive = '', role = 'user' }) => {
+    let content = ensureAgentCurrentEnvelope(history, role)
+    content = prependTextToContent(content, prefix)
+    content = appendTextToContent(content, directive)
+    return content
+}
+
+/**
  * 处理聊天请求体的中间件
  * 解析和转换请求参数为内部格式
  */
@@ -265,10 +316,6 @@ const processRequestBody = async (req, res, next) => {
 
     // 工具提示词拼接到用户消息内容上
     if (hasTools && toolSystemPrompt) {
-      body.messages[0].content = ensureAgentCurrentEnvelope(
-        body.messages[0].content,
-        lastMessage.role || 'user'
-      )
       // Orden fijo en ambos caminos: toolPrompt -> ledger -> envelope -> directive. El
       // ledger va pegado al protocolo porque es parte del contrato de herramientas (sin el
       // protocolo delante seria una lista de ordinales sueltos), y delante de la historia
@@ -280,30 +327,17 @@ const processRequestBody = async (req, res, next) => {
       // NUEVAS. buildBudgetedAgentPrompt (utils/request.js) lo separa y lo recorta aparte,
       // reconociendolo por sus dos primeras lineas; tiene que ir AL FINAL del prefijo.
       const toolPrefix = [toolSystemPrompt, toolHistoryLedger].filter(Boolean).join('\n\n')
-      const msgContent = body.messages[0].content
-      if (typeof msgContent === 'string') {
-        body.messages[0].content = `${toolPrefix}\n\n${msgContent}`
-      } else if (Array.isArray(msgContent)) {
-        const textIdx = msgContent.findIndex(c => c?.type === 'text')
-        if (textIdx >= 0) {
-          msgContent[textIdx].text = `${toolPrefix}\n\n${msgContent[textIdx].text || ''}`
-        } else {
-          msgContent.unshift({ type: 'text', text: toolPrefix })
-        }
-      }
-
       const turnDirective = buildAgentTurnDirective({ afterToolResult })
-      const directedContent = body.messages[0].content
-      if (typeof directedContent === 'string') {
-        body.messages[0].content = `${directedContent}\n\n${turnDirective}`
-      } else if (Array.isArray(directedContent)) {
-        const textIdx = directedContent.findIndex(c => c?.type === 'text')
-        if (textIdx >= 0) {
-          directedContent[textIdx].text = `${directedContent[textIdx].text || ''}\n\n${turnDirective}`
-        } else {
-          directedContent.unshift({ type: 'text', text: turnDirective })
-        }
-      }
+      body.messages[0].content = composeAgentContent({
+        history: body.messages[0].content,
+        prefix: toolPrefix,
+        directive: turnDirective,
+        role: lastMessage.role || 'user'
+      })
+      // 会话复用续用/分叉时用同样的顺序重拼（utils/session-reuse.js#applyDelta），
+      // 所以把这两段留在这里，别让第二个地方自己再拼一遍。
+      req.agent_prefix = toolPrefix
+      req.agent_directive = turnDirective
     }
 
     // 保存完整消息历史供下游使用（用于多轮对话上下文）
@@ -336,5 +370,6 @@ const processRequestBody = async (req, res, next) => {
 module.exports = {
   processRequestBody,
   shouldEnableToolRuntime,
-  ensureAgentCurrentEnvelope
+  ensureAgentCurrentEnvelope,
+  composeAgentContent
 }

@@ -6,6 +6,7 @@ const { adminKeyVerify } = require('../middlewares/authorization')
 const { logger } = require('../utils/logger')
 const { NAME_MAX_LENGTH, buildModelMap, parseModelMap, getUnmappedModels, forgetUnmapped } = require('../utils/model-map')
 const { getLatestModels } = require('../models/models-map')
+const sessionReuse = require('../utils/session-reuse.js')
 
 const dataPersistence = new DataPersistence()
 
@@ -338,6 +339,38 @@ router.post('/simple-model-map', adminKeyVerify, async (req, res) => {
     })
   } catch (error) {
     logger.error('更新简化模型映射设置失败', 'CONFIG', '', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/**
+ * GET /sessions
+ *
+ * 会话复用表的只读快照。排查"为什么又新建了一个上游窗口"就看这里：
+ * stats.created 涨 = 这一轮没命中已有会话，具体原因在每条
+ * `会话复用：<mode>（<reason>）` 日志里（utils/session-reuse.js#planForRequest）。
+ *
+ * 只下发哈希与计数，不下发消息正文。
+ */
+router.get('/sessions', adminKeyVerify, (req, res) => {
+  try {
+    res.json(sessionReuse.listSessions())
+  } catch (error) {
+    logger.error('读取会话表失败', 'CONFIG', '', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/**
+ * DELETE /sessions
+ * 清空会话表：换号/换机器之后想让所有对话重新建窗口时用。
+ */
+router.delete('/sessions', adminKeyVerify, (req, res) => {
+  try {
+    sessionReuse.clearSessions()
+    res.json({ status: true, ...sessionReuse.listSessions() })
+  } catch (error) {
+    logger.error('清空会话表失败', 'CONFIG', '', error)
     res.status(500).json({ error: error.message })
   }
 })

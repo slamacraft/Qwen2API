@@ -1309,6 +1309,38 @@ Video generation response example:
 
 ### 🎯 Advanced Features
 
+#### ♻️ Session reuse (stateless clients keep their chat)
+
+Stateless clients (OpenAI SDK, Claude Code, agent frameworks) resend the **entire history** on every turn. The proxy maps that onto **one upstream Qwen chat** and sends only the delta, instead of opening a new window each turn.
+
+Conversation identity, in order:
+
+1. `X-Conversation-Id` request header
+2. OpenAI `prompt_cache_key`
+3. Anthropic `metadata.user_id` / `metadata.session_id`
+4. OpenAI `user` field
+5. Content fingerprint: model + tool-name set + first user message (a timestamp in `system` or a reordered tool list does not change it)
+6. If none match, the history prefix is compared against known sessions (a client history that literally contains a session's synced prefix is that session)
+
+Inspect and clear it (admin key required):
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_KEY>" http://127.0.0.1:3000/api/sessions
+curl -X DELETE -H "Authorization: Bearer <ADMIN_KEY>" http://127.0.0.1:3000/api/sessions
+```
+
+The snapshot lists each session's key digest, upstream chatId, account, synced message count, last mode, plus this process's `created / continued / branched / diverged` counters. **A rising `created` means identity misses**; the reason is in the `会话复用：<mode>（<reason>）` log line.
+
+Environment variables: `SESSION_REUSE_ENABLED`, `SESSION_REUSE_TTL_SECONDS`, `SESSION_REUSE_MAX_ENTRIES`, `SESSION_REUSE_PERSIST`.
+
+#### ⏳ Daily quota exhaustion and recovery
+
+When the upstream reports "today's limit reached" as **message content** (HTTP 200, a few text frames, then end), the proxy recognizes it (Chinese/English/Korean), turns the turn into `429 insufficient_quota`, marks the account as **limit reached** and removes it from the rotation pool immediately:
+
+- Recovery defaults to **09:00 the next day** (in `QUOTA_RESET_TZ`); change the hour with `QUOTA_RESET_HOUR`; `QUOTA_RESET_SAME_DAY=1` uses the next 09:00 instead
+- If the upstream reports a longer wait (`data.num` hours), the later one wins
+- The dashboard shows "Limit reached" with the exact recovery time in the tooltip, and the account returns to the pool automatically
+
 #### 🔍 Smart Search Mode
 
 Append `-search` suffix to model name to enable search functionality:

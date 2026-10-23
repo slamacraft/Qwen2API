@@ -36,10 +36,13 @@ const {
     assertNoUpstreamFailure,
     describeUpstreamFailure,
     isRateLimitError,
+    isQuotaNoticeText,
     isWafChallengeError,
     noteRateLimitedAccount,
     unclassifiedFailure,
-    openAIErrorShape
+    openAIErrorShape,
+    UpstreamResponseError,
+    RATE_LIMIT_CODE
 } = require('../utils/upstream-error.js')
 const { runOpenAIAgentTurn } = require('../utils/openai-agent-runtime.js')
 
@@ -729,11 +732,14 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
             if (!decodeJson.choices || decodeJson.choices.length === 0) return
 
             const choice = decodeJson.choices[0]
-            // 只有上游明确 finished 的回合才算"可续用"；被截断/中断的记成 badTurn
-            if (choice?.delta?.status === 'finished' && options.upstream_context) {
+            // 只有上游明确 finished 的回合才算"可续用"；被截断/中断的记成 badTurn。
+            // `finish_reason` 同样算证据：工具轮的收尾只带 finish_reason=tool_calls，
+            // 不带 status:'finished'。只认后者会把每个工具轮都记成 badTurn，于是每一轮
+            // 工具调用都触发一次"分叉重生成"——2026-10-23 复现的正是这个。
+            const reportedFinishReason = choice.finish_reason ?? choice.delta?.finish_reason
+            if (options.upstream_context && (choice?.delta?.status === 'finished' || reportedFinishReason)) {
                 options.upstream_context.finished = true
             }
-            const reportedFinishReason = choice.finish_reason ?? choice.delta?.finish_reason
             if (reportedFinishReason !== undefined && reportedFinishReason !== null) {
                 upstreamFinishReason = reportedFinishReason
             }
@@ -869,6 +875,19 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
                 logger.error('Agent 补偿重试失败', 'CHAT', '', e)
                 if (e.publicMessage) throw e
             }
+        }
+
+        // 配额通知已经当正文发出去了（首帧没认出来，常见于分片到达）：状态码改不了了，
+        // 但账户必须立刻移出轮换池，否则下一个请求还会选它、再烧一次。
+        if (isQuotaNoticeText(visibleContent)) {
+            noteRateLimitedAccount(
+                new UpstreamResponseError(visibleContent.trim(), RATE_LIMIT_CODE),
+                options.currentAccount
+            )
+            logger.warn(
+                `上游把「今日额度已达上限」当正文返回（账户 ${options.currentAccount?.email || '未知'}），已移出轮换池`,
+                'CHAT'
+            )
         }
 
         if (!visibleContent.trim() &&
@@ -1037,11 +1056,14 @@ const handleNonStreamResponse = async (res, response, enable_thinking, enable_we
             if (!decodeJson.choices || decodeJson.choices.length === 0) return
 
             const choice = decodeJson.choices[0]
-            // 只有上游明确 finished 的回合才算"可续用"；被截断/中断的记成 badTurn
-            if (choice?.delta?.status === 'finished' && options.upstream_context) {
+            // 只有上游明确 finished 的回合才算"可续用"；被截断/中断的记成 badTurn。
+            // `finish_reason` 同样算证据：工具轮的收尾只带 finish_reason=tool_calls，
+            // 不带 status:'finished'。只认后者会把每个工具轮都记成 badTurn，于是每一轮
+            // 工具调用都触发一次"分叉重生成"——2026-10-23 复现的正是这个。
+            const reportedFinishReason = choice.finish_reason ?? choice.delta?.finish_reason
+            if (options.upstream_context && (choice?.delta?.status === 'finished' || reportedFinishReason)) {
                 options.upstream_context.finished = true
             }
-            const reportedFinishReason = choice.finish_reason ?? choice.delta?.finish_reason
             if (reportedFinishReason !== undefined && reportedFinishReason !== null) {
                 upstreamFinishReason = reportedFinishReason
             }
@@ -1241,6 +1263,9 @@ const handleChatCompletion = async (req, res) => {
     const enable_thinking = req.enable_thinking
     const enable_web_search = req.enable_web_search
 
+    // 会话键留在外面：失败路径要放行等在同一会话上的并发请求（见 catch）
+    let reuseKey = null
+
     try {
         // Gemelo de anthropic.js: compactar solo sin tools; con tools el fallo del
         // adjunto sale como 503 reintentable (catch de abajo). La clave de sesion permite
@@ -1258,8 +1283,11 @@ const handleChatCompletion = async (req, res) => {
                 firstMessage: requestMessages.find(message => message?.role !== 'system') ?? null
             })
         }
-        // 会话复用：已有会话续用/分叉（只发增量），新会话按「最少使用」选号
-        const reuse = sessionReuse.planForRequest(req)
+        // 会话复用：已有会话续用/分叉（只发增量），新会话按「最少使用」选号。
+        // planForRequest 是 async 的：没有会话时它会短暂等同一会话的并发首轮记录完，
+        // 免得两个请求各建一个上游 chat（见 utils/session-reuse.js#waitForInflight）。
+        const reuse = await sessionReuse.planForRequest(req)
+        reuseKey = reuse ? reuse.key : null
         const reuseContext = {}
         if (reuse) {
             if (reuse.plan.mode !== 'new' && sessionReuse.applyDelta(req, reuse.plan)) {
@@ -1275,6 +1303,8 @@ const handleChatCompletion = async (req, res) => {
         const response_data = await sendChatRequest(req.body, upstreamOptions)
 
         if (!response_data.status || !response_data.response) {
+            // 没拿到可用响应 = 这一轮没记录成会话，放行并发等待者
+            if (reuseKey) sessionReuse.abort(reuseKey)
             // El fallo dice por que fallo: cuota 429 `insufficient_quota`, sobrecarga o
             // transporte 503, sin clasificar 502. Antes: un 500 mudo para todo, con el que
             // un cliente agentico no podia distinguir "vuelve luego" de "servidor roto".
@@ -1330,6 +1360,8 @@ const handleChatCompletion = async (req, res) => {
 
     } catch (error) {
         logger.error('聊天处理错误', 'CHAT', '', error)
+        // 这一轮没有记录成会话：放行等在同一会话上的并发请求（否则它们要等满超时）
+        if (reuseKey) sessionReuse.abort(reuseKey)
         // Adjunto de contexto caido con tools: 503 reintentable (gemelo del 529 de
         // anthropic.js). Cualquier otra cosa conserva el 500 de siempre.
         const failure = describeUpstreamFailure(error, 500, 503)

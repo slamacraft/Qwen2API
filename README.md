@@ -1337,6 +1337,38 @@ Authorization: Bearer sk-your-api-key
 
 ### 🎯 高级功能
 
+#### ♻️ 会话复用（无状态客户端自动续聊）
+
+无状态客户端（OpenAI SDK、Claude Code、各种 Agent 框架）每一轮都会把**整段历史**重新打包发来。服务端会把它映射到**同一个上游 Qwen 会话**，续聊时只发增量（省 token、保住上游上下文），而不是每轮新建一个窗口。
+
+会话身份的判定顺序：
+
+1. 请求头 `X-Conversation-Id`
+2. OpenAI 的 `prompt_cache_key`
+3. Anthropic 的 `metadata.user_id` / `metadata.session_id`
+4. OpenAI 的 `user` 字段
+5. 内容指纹：模型 + 工具名集合 + 首条用户消息（`system` 里加时间戳、工具换顺序都不影响它）
+6. 都没命中时，按**历史前缀**匹配已有会话（客户端历史逐字包含某个会话的已同步前缀，就算同一个会话）
+
+查看与清理（需要管理员密钥）：
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_KEY>" http://127.0.0.1:3000/api/sessions
+curl -X DELETE -H "Authorization: Bearer <ADMIN_KEY>" http://127.0.0.1:3000/api/sessions
+```
+
+返回每个会话的键摘要、上游 chatId、所属账号、已同步条数、最近一次模式，以及本进程的 `created / continued / branched / diverged` 计数。**`created` 一直涨 = 身份没命中**，具体原因在日志的 `会话复用：<mode>（<reason>）` 里。
+
+相关环境变量：`SESSION_REUSE_ENABLED`、`SESSION_REUSE_TTL_SECONDS`、`SESSION_REUSE_MAX_ENTRIES`、`SESSION_REUSE_PERSIST`。
+
+#### ⏳ 额度耗尽与自动恢复
+
+上游把「今日额度已达上限」当**正文**下发时（HTTP 200、几帧文字、然后结束），服务端会识别它（中/英/韩三语），把这轮变成 `429 insufficient_quota`，并把该账号标记为**已达上限**、立刻移出轮换池：
+
+- 恢复时刻默认是**次日 09:00**（`QUOTA_RESET_TZ` 时区），可用 `QUOTA_RESET_HOUR` 改小时；`QUOTA_RESET_SAME_DAY=1` 改成「下一个 09:00」
+- 上游若给出更长的等待（`data.num` 小时），取更晚的那个
+- 管理面板里该账号显示「已达上限」，tooltip 写明具体恢复时间；到点自动回到可用，无需重启
+
 #### 🔍 智能搜索模式
 
 在模型名称后添加 `-search` 后缀启用搜索功能：

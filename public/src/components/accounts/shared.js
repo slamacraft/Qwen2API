@@ -31,6 +31,9 @@ export const DEFAULT_STATS = Object.freeze({
 export const STATUS_META = Object.freeze({
   active: { label: 'accounts.statusActive', badge: 'badge-ok', icon: 'shield' },
   warn: { label: 'accounts.statusWarn', badge: 'badge-warn', icon: 'alert' },
+  // 额度耗尽单列：它和普通冷却不是一回事（普通冷却几分钟就好，这个是"今天别用它了"）。
+  // 后端 cli-support.js#getAccountCliState 在 quotaCooldownEndsAt 未到期时给这个 kind。
+  quota_exhausted: { label: 'accounts.statusQuotaExhausted', badge: 'badge-danger', icon: 'clock' },
   cooldown: { label: 'accounts.statusCooldown', badge: 'badge-danger', icon: 'clock' },
   token_expiring: { label: 'accounts.statusExpiring', badge: 'badge-warn', icon: 'key' },
   disabled: { label: 'accounts.statusDisabled', badge: 'badge-mute', icon: 'stop' }
@@ -82,6 +85,13 @@ export const formatIsoTime = (iso) => {
 // 账号健康状态的 tooltip：冷却给倒计时，异常给错误码与多久以前，临期提示令牌
 export const buildStatusTooltip = (status, now, t) => {
   const kind = status?.kind || 'active'
+  // 额度耗尽给**绝对时间**（"明天 09:00 恢复"），冷却给倒计时（几分钟的事）
+  if (kind === 'quota_exhausted') {
+    const at = typeof status?.quotaResetAt === 'number'
+      ? new Date(status.quotaResetAt).toLocaleString()
+      : ''
+    return t('accounts.statusTooltipQuotaExhausted', { at: at || '—' })
+  }
   if (kind === 'cooldown' && typeof status?.cooldownEndsAt === 'number') {
     return t('accounts.statusTooltipCooldown', { until: formatCountdown(status.cooldownEndsAt - now) })
   }

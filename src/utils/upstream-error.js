@@ -111,6 +111,72 @@ const RATE_LIMIT_OPENAI_TYPE = 'insufficient_quota';
 const RATE_LIMIT_MESSAGE_RE = /upper limit for today|reached the upper limit|已达上限|次数已达上限/i;
 
 /**
+ * 配额通知**当正文**下发时的识别（2026-10-23 实测）。
+ *
+ * 上面那条 `RATE_LIMIT_MESSAGE_RE` 只看 `error.message / publicMessage`，可 Qwen 有时
+ * 根本不发错误帧：HTTP 200、几帧正文、然后结束。网页上看到的就是一条普通回答：
+ *   「Qwen3.8-Max 今日已达上限，请升级会员或在上方切换其他模型继续使用。」
+ *   「오늘의 Qwen3.8-Max 한도에 도달했습니다. 멤버십을 업그레이드하거나 …」
+ * 于是 `/v1/chat/completions` 快速结束、没有任何消息，账户还留在轮换池里被反复烧。
+ *
+ * 判定刻意**窄**：整段正文必须很短（通知只有一行），且命中各语言的固定说法。
+ * 用户问「什么叫已达上限」得到的长回答不会命中。
+ */
+const QUOTA_NOTICE_RE = /已达上限|한도에\s*도달|reached the upper limit|upper limit for today|upgrade your membership|额度已用尽/i;
+const QUOTA_NOTICE_MAX_CHARS = 300;
+/** 通知是独立的一句，一定出现在开头；"解释什么叫已达上限"的回答不会。 */
+const QUOTA_NOTICE_ANCHOR_CHARS = 60;
+
+/**
+ * 这段正文是不是"今日额度已达上限"的通知？
+ *
+ * 两个条件同时满足才算：整段很短（通知只有一行）**且**说法出现在开头 60 字内。
+ * 只按长度判会把一段恰好提到这个词的短回答也算进去；只按关键词判又会误伤长回答。
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+const isQuotaNoticeText = (text) => {
+  if (typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || trimmed.length > QUOTA_NOTICE_MAX_CHARS) return false;
+  return QUOTA_NOTICE_RE.test(trimmed.slice(0, QUOTA_NOTICE_ANCHOR_CHARS));
+};
+
+/**
+ * 从一个上游 payload 里取出"当前正文"（流式 delta 或非流式 message）。
+ * @param {unknown} payload
+ * @returns {string}
+ */
+const contentTextOf = (payload) => {
+  if (!payload || typeof payload !== 'object') return '';
+  const choice = Array.isArray(payload.choices) ? payload.choices[0] : null;
+  const holder = choice?.delta ?? choice?.message ?? null;
+  if (!holder) return '';
+  if (typeof holder.content === 'string') return holder.content;
+  if (Array.isArray(holder.content)) {
+    return holder.content.map((item) => String(item?.text ?? '')).join('');
+  }
+  return '';
+};
+
+/**
+ * 配额通知以正文形式到达时，造出与"错误帧"完全相同的错误对象。
+ * 下游（describeUpstreamFailure / noteRateLimitedAccount / 各控制器的 catch）不需要
+ * 知道它当初是从哪条路来的。
+ * @param {unknown} payload
+ * @returns {UpstreamResponseError|null}
+ */
+const detectQuotaNotice = (payload) => {
+  if (!isQuotaNoticeText(contentTextOf(payload))) return null;
+  const waitHours = payload?.data?.num;
+  return new UpstreamResponseError(
+    contentTextOf(payload).trim(),
+    RATE_LIMIT_CODE,
+    waitHours === undefined || waitHours === null ? null : { waitHours }
+  );
+};
+
+/**
  * ¿Este fallo de upstream es la cuota diaria agotada?
  * @param {unknown} error - Error capturado en el controlador
  * @returns {boolean}
@@ -485,6 +551,12 @@ const assertNoUpstreamFailure = (payload, source) => {
   if (challenge) throw challenge;
   if (!payload || typeof payload !== 'object') return;
 
+  // 配额通知藏在正文里（没有 error 帧，见 detectQuotaNotice 的注释）。必须在
+  // `noteChatAnswer` 之前抛：一旦被当成"正常回答"，这一轮就变成空成功，账户也不会
+  // 被移出轮换池。
+  const quotaNotice = detectQuotaNotice(payload);
+  if (quotaNotice) throw quotaNotice;
+
   const explicitError = payload.error;
   if (explicitError && !Array.isArray(payload.choices)) {
     const message = typeof explicitError === 'string'
@@ -530,6 +602,9 @@ module.exports = {
   unclassifiedFailure,
   openAIErrorShape,
   noteRateLimitedAccount,
+  detectQuotaNotice,
+  isQuotaNoticeText,
+  QUOTA_NOTICE_RE,
   ContextExternalizationError,
   isContextAttachmentError,
   RATE_LIMIT_CODE,

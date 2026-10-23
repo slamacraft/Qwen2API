@@ -89,14 +89,18 @@
 ## 四、待办清单
 
 1. B：抓官方 CLI 的 token 交换请求，验证 `portal.qwen.ai/v1/chat/completions` 能否对话。
-2. OpenAI **Responses API**（`/v1/responses`）：`input`/`instructions`/`output`/SSE 事件序列，独立于现有链路。
-3. **Anthropic 路径**（`/v1/messages`，Claude Code）接同一套会话复用。
-4. 会话复用：工具轮次上限目前第 4 次 HTTP 才停（改按 `finish_reason` 预判）；截断分叉（badTurn）未做端到端验证；流式工具调用未单独验证。
+2. OpenAI **Responses API**（`/v1/responses`）：`input`/`instructions`/`output`/SSE 事件序列，独立于现有链路。（已完成，见 todo.md 第 7 节）
+3. ~~**Anthropic 路径**（`/v1/messages`，Claude Code）接同一套会话复用。~~ **已完成（2026-10-23，todo.md 第 13 节）**：`historyStart` 切增量、`consumeUpstream` 抓 `response.created` 的 id、`upstreamOptions.chatId/parentId` 接线。
+4. 会话复用：~~改按 `finish_reason` 预判~~ **已做**（工具轮不再算 badTurn）；~~截断分叉（badTurn）未做端到端验证~~ **已做**（`tests/session-reuse-e2e.test.js` + 分叉一次上限）；流式工具调用未单独验证（仍待）。
 5. 指纹可用性还可以再进一步：面板现在能一键生成，但「生成失败的原因」只 toast 一次，可以考虑在详情面板留一条最近一次失败原因/时间。
+6. 真机复验（本机无账号额度，全部靠假上游的单测/端到端覆盖）：① 额度耗尽 → 429 + 次日 09:00 恢复；② 无状态客户端 5 轮工具调用只建 1 个上游窗口；③ 面板「会话复用」一栏的目视验收。
 
 ## 五、关键决策（别再翻案）
 
-- **会话复用**：正常轮次线性续用；上一轮被截断/被拒 → 从那条 user 消息分叉；客户端改历史/换会话/换号 → 新会话全量重放。开关 `SESSION_REUSE_ENABLED=false` 可整体回退。
+- **会话复用**：正常轮次线性续用；上一轮被截断/被拒 → 从那条 user 消息分叉**但只分叉一次**（再分叉会把原始任务挤出上下文，见 todo.md 第 12 节）；客户端改历史/换会话/换号 → 新会话全量重放。开关 `SESSION_REUSE_ENABLED=false` 可整体回退。
+- **会话身份**：显式 id 优先（`X-Conversation-Id` → `prompt_cache_key` → `metadata.user_id` → `user`），指纹只取「模型 + 工具名集合 + 首条用户消息」（system 会带时间戳，不进键），都没命中再按历史前缀匹配。别把 system/工具描述塞回指纹——那会让无状态客户端每轮换会话。
+- **续用轮的 content 由 `chat-middleware.js#composeAgentContent` 一处拼装**（信封 → toolPrompt/ledger → 指令）。`session-reuse.js#applyDelta` 必须复用它：直接覆盖 content 会把工具协议和回合指令一起丢掉，模型只会吐裸正文。
+- **额度耗尽**：上游把「今日已达上限」当正文下发时，识别为 `RateLimited` → 429 `insufficient_quota` + 账户移出轮换池，**次日 09:00**（`QUOTA_RESET_HOUR/TZ`）自动回来；上游给的等待更长时取更晚者。
 - **换号**：上下文重置（不做历史迁移）。
 - **新会话选号**：最少使用（均摊）；老会话粘住自己的账号。
 - **每个参与轮换的账号都必须有自己的浏览器指纹**，否则会被排除（防止串号烧别人额度）。

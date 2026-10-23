@@ -592,17 +592,26 @@ describe('el pool: una cuenta sin cuota sale del sorteo', () => {
     }
   });
 
-  it('la espera real del upstream fija el final del enfriamiento', () => {
+  it('la espera del upstream solo manda si es MAS TARDE que el reset diario', () => {
     const rot = new AccountRotator();
     rot.setAccounts(accounts);
-    const before = Date.now();
-    rot.recordQuotaExhausted('a@x.io', 3600);
+    // Reset diario dentro de 10 s: una espera de 1 s del upstream NO puede recortarlo
+    // (volveria al sorteo antes de que Qwen resetee la cuota y quemaria otra vuelta).
+    rot.quotaResetAt = () => Date.now() + 10 * 1000;
+    rot.recordQuotaExhausted('a@x.io', 1);
     const ends = rot.getStats().usageStats['a@x.io'].quotaCooldownEndsAt;
-    assert.ok(ends >= before + 3600 * 1000, 'una hora de espera == una hora fuera');
-    assert.ok(ends <= Date.now() + 3600 * 1000 + 5000);
+    assert.ok(ends >= Date.now() + 9 * 1000, 'gana el reset diario cuando es mas tarde');
+
+    // Y al reves: una espera del upstream mas larga (mantenimiento) se respeta.
+    const rot2 = new AccountRotator();
+    rot2.setAccounts(accounts);
+    rot2.quotaResetAt = () => Date.now() + 1000;
+    rot2.recordQuotaExhausted('a@x.io', 3600);
+    const ends2 = rot2.getStats().usageStats['a@x.io'].quotaCooldownEndsAt;
+    assert.ok(ends2 >= Date.now() + 3599 * 1000, 'una hora de espera == una hora fuera');
   });
 
-  it('sin espera del upstream se usa el enfriamiento por defecto, no cero', () => {
+  it('sin espera del upstream se usa el reset diario, no cero', () => {
     const rot = new AccountRotator();
     rot.setAccounts(accounts);
     rot.recordQuotaExhausted('a@x.io', null);
@@ -613,7 +622,7 @@ describe('el pool: una cuenta sin cuota sale del sorteo', () => {
   it('el enfriamiento caduca solo: pasada la espera la cuenta vuelve', () => {
     const rot = new AccountRotator();
     rot.setAccounts(accounts);
-    rot.quotaCooldownPeriod = 5;
+    rot.quotaResetAt = () => Date.now() + 5;
     rot.recordQuotaExhausted('a@x.io', null);
     assert.equal(rot.getStats().available, 1);
     return new Promise(resolve => setTimeout(() => {
@@ -636,8 +645,9 @@ describe('el pool: una cuenta sin cuota sale del sorteo', () => {
   it('el dashboard no puede pintar como activa una cuenta que el sorteo esta ignorando', () => {
     // getAccountCliState deriva `kind` de cooldownEndsAt, que solo lo pone el contador de
     // fallos. Sin esto una cuenta desterrada por cuota sale como `warn` 15 minutos y
-    // `active` despues, mientras la rotacion lleva una hora saltandosela: el operador ve
-    // un pool sano y una capacidad que no existe.
+    // `active` despues, mientras la rotacion la sigue saltando: el operador ve un pool
+    // sano y una capacidad que no existe. Desde 2026-10-23 la cuota tiene su PROPIO kind
+    // (`quota_exhausted`), porque no es un enfriamiento de minutos sino "hoy no la uses".
     const { getAccountCliState } = require('../src/utils/cli-support.js');
     const now = Date.now();
     const state = getAccountCliState(
@@ -645,8 +655,9 @@ describe('el pool: una cuenta sin cuota sale del sorteo', () => {
       { quotaCooldownEndsAt: now + 3600 * 1000, lastErrorAt: now, lastErrorCode: 'RateLimited' },
       now
     );
-    assert.equal(state.status.kind, 'cooldown', 'esta fuera del sorteo: dilo');
+    assert.equal(state.status.kind, 'quota_exhausted', 'esta fuera del sorteo: dilo');
     assert.equal(state.status.cooldownEndsAt, now + 3600 * 1000, 'y con la cuenta atras de verdad');
+    assert.equal(state.status.quotaResetAt, now + 3600 * 1000, 'y con el momento exacto de vuelta');
 
     // El enfriamiento por fallos manda si termina mas tarde que el de cuota.
     const later = getAccountCliState(

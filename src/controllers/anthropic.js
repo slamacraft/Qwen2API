@@ -55,6 +55,7 @@ const {
   trimLoneSurrogates
 } = require('../utils/agent-turn.js');
 const { ensureAgentCurrentEnvelope } = require('../middlewares/chat-middleware.js');
+const sessionReuse = require('../utils/session-reuse.js');
 const { mapIncomingModel } = require('../utils/model-map.js');
 const { consumeSSEStream, createUpstreamResponseFilter } = require('../utils/sse.js');
 const { logger } = require('../utils/logger');
@@ -62,11 +63,13 @@ const {
   assertNoUpstreamFailure,
   describeUpstreamFailure,
   isRateLimitError,
+  isQuotaNoticeText,
   isTransportInterruption,
   isWafChallengeError,
   noteRateLimitedAccount,
   unclassifiedFailure,
   RATE_LIMIT_ANTHROPIC_TYPE,
+  RATE_LIMIT_CODE,
   UpstreamResponseError
 } = require('../utils/upstream-error.js');
 const { describeEgress } = require('../utils/proxy-helper.js');
@@ -648,9 +651,10 @@ const flattenAnthropicMessages = (messages) => {
 /**
  * 构造内部 Qwen 上游请求体
  * @param {Object} anthropicReq - Anthropic 风格请求体
- * @returns {Promise<{body: Object, hasTools: boolean, toolChoice: any, allowedToolNames: string[], enable_thinking: boolean, model: string}>} 转换结果
+ * @param {{historyStart?: number}} [options] - historyStart：会话复用续用/分叉时跳过的历史条数
+ * @returns {Promise<{body: Object, hasTools: boolean, toolChoice: any, allowedToolNames: string[], enable_thinking: boolean, model: string, historyStart: number}>} 转换结果
  */
-const buildInternalRequest = async (anthropicReq) => {
+const buildInternalRequest = async (anthropicReq, options = {}) => {
   const { messages, system, tools, tool_choice, stream, thinking } = anthropicReq;
   // 先做 MODEL_MAP 映射，再判定 thinking / chat_type：目标 id 的 -thinking 后缀要照常生效
   const model = await mapIncomingModel(anthropicReq.model);
@@ -664,6 +668,36 @@ const buildInternalRequest = async (anthropicReq) => {
 
   // 1. 展开 Anthropic 消息（tool_use/tool_result 折叠由 foldToolMessages 完成）
   let flat = flattenAnthropicMessages(messages);
+  // 会话复用：续用/分叉时上游会话里已经有了前 historyStart 条，只送增量。
+  // 切在这里（折叠、媒体收割、台账之前）是刻意的：三者都只该看到真正发出去的那部分，
+  // 否则台账会把上游早就有的调用再列一遍，媒体也会把早轮上传过的图再传一次。
+  // 切空了就当作没切——宁可全量重放，也不要发一条空消息。
+  const historyStartRequested = Math.max(0, Number(options && options.historyStart) || 0);
+  let historyStart = historyStartRequested > 0 && historyStartRequested < flat.length
+    ? historyStartRequested
+    : 0;
+  if (historyStart > 0) {
+    // 已经同步过的工具结果不要再发一遍：客户端重试时会把同一段 tool_result 重新打包
+    // 过来，上游会话里已经有了。重复发既浪费 token，又会让模型以为工具被重新调用过。
+    const syncedToolResults = new Set();
+    for (const message of flat.slice(0, historyStart)) {
+      if (message && message.role === 'tool' && message.tool_call_id) syncedToolResults.add(String(message.tool_call_id));
+    }
+    const sliced = flat.slice(historyStart).filter((message) => {
+      if (!message || message.role !== 'tool' || !message.tool_call_id) return true;
+      const id = String(message.tool_call_id);
+      if (syncedToolResults.has(id)) return false;
+      syncedToolResults.add(id);
+      return true;
+    });
+    // 去重后空了（这一轮全是重复的工具结果）→ 当作没切，全量重放，绝不发空消息
+    if (sliced.length > 0) flat = sliced;
+    else historyStart = 0;
+  }
+  // 增量轮永远带上原始任务（拼在下面的前缀里，不塞进消息数组）：父链断了
+  // （parentId 为 null）时上游只剩工具结果，模型会合理地回一句"没有原始任务"。
+  // 与 OpenAI 面 session-reuse.js#applyDelta 的锚点是同一件事。
+  const taskAnchor = historyStart > 0 ? String((options && options.taskAnchor) || '').trim() : '';
   // ponytail: gate on tool_choice !== 'none' to match OpenAI path (chat-middleware.js:7-12)
   const hasTools = normalizedTools.length > 0 && internalToolChoice !== 'none';
   // El ledger se arma AQUI, antes del barrido de medios y del `delete message.media` que
@@ -839,7 +873,10 @@ const buildInternalRequest = async (anthropicReq) => {
       lastForEnvelope.role || 'user'
     );
   }
-  const prefixParts = [systemText, toolPrompt, toolLedger].filter(Boolean);
+  const prefixParts = [
+    taskAnchor ? `[ORIGINAL TASK]\n${taskAnchor}` : '',
+    systemText, toolPrompt, toolLedger
+  ].filter(Boolean);
   if (prefixParts.length > 0 && Array.isArray(parsedMessages) && parsedMessages.length > 0) {
     const prefix = prefixParts.join('\n\n');
     const last = parsedMessages[parsedMessages.length - 1];
@@ -981,7 +1018,9 @@ const buildInternalRequest = async (anthropicReq) => {
     toolSchemas,
     enable_thinking: thinkingCfg.thinking_enabled,
     model: parsedModel,
-    contextPrefixKey
+    contextPrefixKey,
+    // 真正跳过的条数（0 = 全量重放）。调用方据此判断会话复用到底生效没有。
+    historyStart
   };
 };
 
@@ -1054,7 +1093,8 @@ const describeToolErrors = (errors) => {
  * 异步迭代上游 axios 流，按 SSE 段切分回调内部 delta JSON
  * @param {object} upstream - axios stream 响应
  * @param {(json: Object) => Promise<void>|void} onDelta - 单个 delta 回调
- * @param {{ shouldStop?: () => boolean }} [options] - 透传给 consumeSSEStream（提前终止谓词）
+ * @param {{ shouldStop?: () => boolean, turnMeta?: object }} [options] - 透传给 consumeSSEStream
+ *        （提前终止谓词）；`turnMeta` 是本模块自己用的回合账本，见下。
  * @returns {Promise<void>} 完成 Promise
  */
 const consumeUpstream = async (upstream, onDelta, options) => consumeSSEStream(upstream, async (frame) => {
@@ -1063,6 +1103,25 @@ const consumeUpstream = async (upstream, onDelta, options) => consumeSSEStream(u
   if (!isJson(payload)) return;
   const parsed = JSON.parse(payload);
   assertNoUpstreamFailure(parsed, upstream);
+  // 会话复用要的两个 id 与"这一轮真结束了"的证据，都只在原始帧里有：
+  // `response.created.parent_id` 是上游那条 user 消息（下一轮分叉的落点），
+  // `response.created.response_id` 是 assistant 消息（下一轮续用的 parent）。
+  // chat.js 在流式/非流式各解析一遍；这里放在唯一入口，两个 handler 共用。
+  const turnMeta = options && options.turnMeta;
+  if (turnMeta) {
+    const created = parsed['response.created'] || parsed.response?.created;
+    if (created && typeof created === 'object') {
+      const parentId = created.parent_id ?? created.parentId;
+      const responseId = created.response_id ?? created.responseId;
+      if (parentId) turnMeta.userMessageId = parentId;
+      if (responseId) turnMeta.assistantMessageId = responseId;
+    }
+    const choice = Array.isArray(parsed.choices) ? parsed.choices[0] : null;
+    // finish_reason 也算证据：工具轮只带 finish_reason=tool_calls，没有 status:'finished'。
+    // 只认后者会把每个工具轮都记成 badTurn → 每轮工具调用都分叉一次（见 planTurn）。
+    const reportedFinishReason = choice?.finish_reason ?? choice?.delta?.finish_reason;
+    if (choice?.delta?.status === 'finished' || reportedFinishReason) turnMeta.finished = true;
+  }
   await onDelta(parsed);
 }, options);
 
@@ -1693,7 +1752,7 @@ const handleAnthropicStream = async (res, ctx, upstream) => {
         () => consumeUpstream(currentUpstream, (json) => {
           ensureMessageStart();
           return onUpstreamDelta(json);
-        }, { shouldStop: () => stopRequested })
+        }, { shouldStop: () => stopRequested, turnMeta: ctx.turnMeta })
       );
       upstreamCompleted = result.completed;
       upstreamEventCount = result.eventCount;
@@ -2041,6 +2100,19 @@ const handleAnthropicStream = async (res, ctx, upstream) => {
     return;
   }
 
+  // 配额通知已经当正文发出去了（首帧没认出来，常见于分片）：状态码改不了了，但账户
+  // 必须立刻移出轮换池，否则下一个请求还会选它、再烧一次。孪生：chat.js 同位置。
+  if (isQuotaNoticeText(visibleText)) {
+    noteRateLimitedAccount(
+      new UpstreamResponseError(visibleText.trim(), RATE_LIMIT_CODE),
+      ctx.currentAccount
+    );
+    logger.warn(
+      `上游把「今日额度已达上限」当正文返回（账户 ${ctx.currentAccount?.email || '未知'}），已移出轮换池`,
+      'ANTHROPIC'
+    );
+  }
+
   closeThinkingBlockIfOpen();
   closeTextBlockIfOpen();
 
@@ -2253,7 +2325,7 @@ const handleAnthropicNonStream = async (res, ctx, upstream) => {
     }
   };
 
-  const initialStreamResult = await consumeUpstream(upstream, onUpstreamDelta, { shouldStop: () => stopRequested });
+  const initialStreamResult = await consumeUpstream(upstream, onUpstreamDelta, { shouldStop: () => stopRequested, turnMeta: ctx.turnMeta });
   upstreamCompleted = initialStreamResult.completed;
   upstreamEventCount = initialStreamResult.eventCount;
 
@@ -2498,7 +2570,7 @@ const handleAnthropicNonStream = async (res, ctx, upstream) => {
     upstreamFinishReason = null;
     // usage 也按轮全新：报的是最后一轮上游给的，没给就估算，绝不继承上一轮的。
     upstreamUsage = null;
-    const retryResult = await consumeUpstream(retryResp.response, onUpstreamDelta, { shouldStop: () => stopRequested });
+    const retryResult = await consumeUpstream(retryResp.response, onUpstreamDelta, { shouldStop: () => stopRequested, turnMeta: ctx.turnMeta });
     upstreamCompleted = retryResult.completed;
     if (!upstreamCompleted && !upstreamFinishReason) {
       streamBrokeOnRetry = true;
@@ -2604,6 +2676,18 @@ const handleAnthropicNonStream = async (res, ctx, upstream) => {
     });
   }
 
+  // 配额通知当正文到达（首帧没认出，可能分片）：状态码改不了，账户立刻移出轮换池。
+  if (isQuotaNoticeText(cleanedText)) {
+    noteRateLimitedAccount(
+      new UpstreamResponseError(cleanedText.trim(), RATE_LIMIT_CODE),
+      ctx.currentAccount
+    );
+    logger.warn(
+      `上游把「今日额度已达上限」当正文返回（账户 ${ctx.currentAccount?.email || '未知'}），已移出轮换池`,
+      'ANTHROPIC'
+    );
+  }
+
   if (toolCalls.length === 0 && !cleanedText.trim() &&
       !['length', 'max_tokens', 'content_filter', 'refusal'].includes(upstreamFinishReason)) {
     return res.status(502).json({
@@ -2691,6 +2775,9 @@ const handleAnthropicMessages = async (req, res) => {
   // Tambien fuera: el catch decide si olvidar un prefijo de historial reutilizado.
   let upstreamResp = null;
   let contextPrefixKey = null;
+  // 会话键与回合账本留在外面：catch 要放行并发等待者，记录要看这一轮的 id。
+  let reuseKey = null;
+  const turnMeta = {};
   try {
     const compatibility = analyzeAnthropicCompatibility(req.body || {});
     const compatibilityHeaders = buildAnthropicCompatibilityHeaders(compatibility);
@@ -2702,9 +2789,30 @@ const handleAnthropicMessages = async (req, res) => {
       );
     }
 
-    const built = await buildInternalRequest(req.body || {});
+    // 会话复用（与 OpenAI 面同一套状态机）：Claude Code 这类客户端每轮把整段历史重新
+    // 打包发来，以前这里每轮都新建一个上游 chat —— 网页上就是"每句话一个新窗口"。
+    // 规划必须在 buildInternalRequest 之前：增量要靠 deltaStart 在折叠/媒体收割之前切。
+    const rawFlat = flattenAnthropicMessages(req.body?.messages || []);
+    const reuse = await sessionReuse.planForRequest(req, {
+      raw: rawFlat,
+      model: req.body?.model,
+      tools: req.body?.tools
+    });
+    reuseKey = reuse ? reuse.key : null;
+
+    const built = await buildInternalRequest(req.body || {}, {
+      historyStart: reuse && reuse.plan.mode !== 'new' ? reuse.plan.deltaStart : 0,
+      taskAnchor: reuse ? reuse.plan.taskAnchor : ''
+    });
     const { body, hasTools, historyToolCalls, toolChoice, allowedToolNames, toolSchemas, model } = built;
     contextPrefixKey = built.contextPrefixKey || null;
+    // 增量没落地（没有新内容 / 切完是空的）→ 这一轮当新建：半份上下文续别人的 chat
+    // 比新建更糟。
+    const reuseApplied = Boolean(reuse) && reuse.plan.mode !== 'new' && built.historyStart > 0;
+    if (reuse && reuse.plan.mode !== 'new' && !reuseApplied) {
+      reuse.plan.mode = 'new';
+      reuse.plan.reason = 'delta-not-applied';
+    }
 
     // Sin tools el contexto puede compactarse si el adjunto falla; con tools NO: un agente
     // que ve una fraccion del historial repite lo hecho, asi que sale 529 reintentable.
@@ -2712,9 +2820,20 @@ const handleAnthropicMessages = async (req, res) => {
     // la clave de sesion el reintento reutiliza el prefijo de historial ya subido en vez
     // de subir y parsear el historial entero otra vez (hasta 3 parses por turno HTTP).
     const upstreamOptions = { allowContextCompaction: !hasTools, contextPrefixKey };
+    if (reuseApplied) {
+      upstreamOptions.chatId = reuse.plan.chatId;
+      upstreamOptions.parentId = reuse.plan.parentId;
+      logger.chat(
+        `会话复用：${reuse.plan.mode === 'branch' ? '分叉重生成' : '续用会话'}`
+        + `（chat=${reuse.plan.chatId}，跳过 ${built.historyStart} 条历史）`,
+        'ANTHROPIC'
+      );
+    }
+    if (reuse && reuse.account) upstreamOptions.currentAccount = reuse.account;
     upstreamResp = await sendChatRequest(body, upstreamOptions);
     currentAccount = upstreamResp.currentAccount || null;
     if (!upstreamResp.status || !upstreamResp.response) {
+      if (reuseKey) sessionReuse.abort(reuseKey);
       // El fallo dice por que fallo: cuota 429 `rate_limit_error`, sobrecarga 529
       // `overloaded_error`, transporte 503, sin clasificar 502 `api_error`. Nunca un
       // `api_error` 500 para todo: eso es indistinguible de "servidor roto".
@@ -2744,7 +2863,9 @@ const handleAnthropicMessages = async (req, res) => {
       toolSchemas,
       requestBody: body,
       currentAccount,
-      upstreamOptions
+      upstreamOptions,
+      // 回合账本：consumeUpstream 往这里写 user/assistant 消息 id 与 finished 证据
+      turnMeta
     };
 
     if (req.body?.stream) {
@@ -2752,8 +2873,28 @@ const handleAnthropicMessages = async (req, res) => {
     } else {
       await handleAnthropicNonStream(res, ctx, upstreamResp.response);
     }
+
+    // 一轮跑完才记录：只有拿到上游 chat_id 才有意义（和 chat.js#rememberReuseTurn 同一条规则）。
+    // 注意这里**不**看 plan.mode：第一轮就是 'new'，正是要把这个新 chat 记下来，
+    // 下一轮才有的续（写成 `mode !== 'new'` 就永远记不上，等于没接）。
+    if (reuse) {
+      sessionReuse.remember({
+        key: reuse.key,
+        plan: reuse.plan,
+        accountEmail: currentAccount?.email,
+        chatId: upstreamResp.chatId,
+        userMessageId: turnMeta.userMessageId,
+        assistantMessageId: turnMeta.assistantMessageId,
+        raw: rawFlat,
+        finished: turnMeta.finished === true
+      })
+    } else if (reuseKey) {
+      sessionReuse.abort(reuseKey)
+    }
   } catch (error) {
     logger.error('Anthropic Messages 处理错误', 'ANTHROPIC', '', error);
+    // 这一轮没记录成会话：放行等在同一会话上的并发请求（否则要等满超时）
+    if (reuseKey) sessionReuse.abort(reuseKey);
     // La cuota diaria agotada es 429 `rate_limit_error`, como la API nativa — no un 500
     // `api_error`. Gemelo: chat.js#writeOpenAIHttpError. La deteccion es unica
     // (utils/upstream-error.js#describeUpstreamFailure); aqui solo se traduce al cable.

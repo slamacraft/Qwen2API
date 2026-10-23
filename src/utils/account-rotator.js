@@ -1,4 +1,75 @@
 const { logger } = require('./logger')
+const config = require('../config/index.js')
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * 某个时区里的"墙上时间"（把 UTC 字段当作该时区的本地字段读）。
+ * @param {Date} date
+ * @param {string} timeZone
+ * @returns {{year:number,month:number,day:number,hour:number,minute:number,second:number}}
+ */
+const zonedWallClock = (date, timeZone) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).formatToParts(date)
+  const pick = (type) => Number(parts.find((part) => part.type === type)?.value)
+  // hour12:false 在部分 ICU 版本里把午夜给成 24
+  return { year: pick('year'), month: pick('month'), day: pick('day'), hour: pick('hour') % 24, minute: pick('minute'), second: pick('second') }
+}
+
+/**
+ * 该时区相对 UTC 的偏移（毫秒）。东八区 = +8h。
+ * @param {Date} date
+ * @param {string} timeZone
+ * @returns {number}
+ */
+const zoneOffsetMs = (date, timeZone) => {
+  const wall = zonedWallClock(date, timeZone)
+  const asUtc = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, wall.second)
+  return asUtc - date.getTime()
+}
+
+/**
+ * 下一次日额度重置时刻（默认次日 09:00 Asia/Shanghai）。
+ *
+ * 用户的口径是"第二天 9 点后再恢复成可用"：额度按天重置，所以在当天任何时刻耗尽，
+ * 真正能再用都是**次日** 9 点。`QUOTA_RESET_SAME_DAY=1` 时改成"下一个 09:00"
+ * （凌晨耗尽就不用白等一天）——默认按字面来。
+ *
+ * @param {{now?: number, hour?: number, timeZone?: string, sameDay?: boolean}} [options]
+ * @returns {number} 解禁时间戳（ms）
+ */
+const nextQuotaResetAt = ({ now = Date.now(), hour, timeZone, sameDay } = {}) => {
+  const resetHour = Number.isFinite(Number(hour)) ? Number(hour) : (Number(config.quotaResetHour) || 9)
+  const zone = String(timeZone || config.quotaResetTz || 'Asia/Shanghai')
+  const allowSameDay = sameDay === undefined ? config.quotaResetSameDay === true : sameDay === true
+  let offset = 0
+  try {
+    offset = zoneOffsetMs(new Date(now), zone)
+  } catch (_) {
+    // 时区名不认识（老 ICU / 拼错）：退回进程本地时区，别让标记账户这件事炸掉
+    offset = -new Date(now).getTimezoneOffset() * 60 * 1000
+  }
+  const wallNow = now + offset
+  const wall = new Date(wallNow)
+  let target = Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate(), resetHour, 0, 0, 0)
+  if (allowSameDay) {
+    if (target <= wallNow) target += DAY_MS
+  } else {
+    // 字面口径：永远是次日（今天 09:00 已过没过都一样）
+    target += DAY_MS
+    if (target <= wallNow) target += DAY_MS
+  }
+  return target - offset
+}
 
 /**
  * 账户轮询管理器
@@ -20,11 +91,9 @@ class AccountRotator {
     this.policy = 'priority'
     // 额外可用性判定（如"该账号还没有浏览器指纹"），由 account.js 注入
     this.accountFilter = null
-    // 额度耗尽的默认静默期。上游给了 `data.num`（小时）时用那个，这是没给时的回退。
-    // 1 小时是刻意保守：额度按天重置，所以更久也“正确”，但分类若误判（文本回退可能
-    // 命中别的东西），一天的流放会白白扔掉一个好账户；1 小时足以掐断热循环，
-    // 又能自己愈合。
-    this.quotaCooldownPeriod = 60 * 60 * 1000
+    // 额度耗尽的静默期：默认到「次日 09:00」（用户口径），见 nextQuotaResetAt。
+    // 上游给了 `data.num`（小时）时取更晚的那个。可注入，测试不必等一天。
+    this.quotaResetAt = (now = Date.now()) => nextQuotaResetAt({ now })
   }
 
   /**
@@ -178,20 +247,26 @@ class AccountRotator {
    *
    * 不做这件事时的代价正是这次改动的理由：客户端看到 429 不再重试了，可服务端还在
    * 把同一个死账户发回轮询，每一轮再烧一次。
+   *
+   * 静默期取「上游给的等待」与「下一次日额度重置」里**更晚**的那个：额度按天重置，
+   * 提前放回来只会再烧一轮；而上游偶尔给一个比日重置更晚的值（维护窗口），也得尊重。
    * @param {string} email - 邮箱地址
-   * @param {number|null} [retryAfterSeconds] - 上游给的真实等待（秒），没有则用默认静默期
+   * @param {number|null} [retryAfterSeconds] - 上游给的真实等待（秒），没有则只看日重置
+   * @param {{now?: number}} [options] - 测试注入时钟
    */
-  recordQuotaExhausted(email, retryAfterSeconds = null) {
+  recordQuotaExhausted(email, retryAfterSeconds = null, { now = Date.now() } = {}) {
     if (!email) return
     const seconds = Number(retryAfterSeconds)
-    const waitMs = Number.isFinite(seconds) && seconds > 0
-      ? seconds * 1000
-      : this.quotaCooldownPeriod
-    this.quotaCooldownUntil.set(email, Date.now() + waitMs)
-    this.lastErrorAt.set(email, Date.now())
+    const upstreamMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0
+    const resetAt = Number(this.quotaResetAt ? this.quotaResetAt(now) : nextQuotaResetAt({ now }))
+    const dailyResetMs = Number.isFinite(resetAt) ? Math.max(0, resetAt - now) : 0
+    const waitMs = Math.max(upstreamMs, dailyResetMs)
+    this.quotaCooldownUntil.set(email, now + waitMs)
+    this.lastErrorAt.set(email, now)
     this.lastErrorCode.set(email, 'RateLimited')
     logger.warn(
-      `账户 ${email} 额度已耗尽，暂停轮询 ${Math.round(waitMs / 60000)} 分钟`,
+      `账户 ${email} 额度已耗尽，暂停轮询 ${Math.round(waitMs / 60000)} 分钟`
+      + `（${new Date(now + waitMs).toLocaleString()} 恢复）`,
       'ACCOUNT'
     )
   }
@@ -363,3 +438,5 @@ class AccountRotator {
 }
 
 module.exports = AccountRotator
+// 纯函数单独导出：额度恢复时刻的算法要有自己的测试，不必造一个 rotator 出来。
+module.exports.nextQuotaResetAt = nextQuotaResetAt

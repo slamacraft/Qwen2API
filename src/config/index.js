@@ -30,6 +30,20 @@ const parseApiKeys = (apiKeyEnv = process.env.API_KEY) => {
 
 const { apiKeys, adminKey } = parseApiKeys()
 
+/**
+ * 解析 0..23 的整点配置。`parseInt(...) || 默认值` 会把合法的 0 当成"没配"，
+ * 于是 QUOTA_RESET_HOUR=0（午夜重置）静默变成 9 点——这类"看着生效其实没生效"
+ * 的设置最难查，所以单独写一个。
+ * @param {string|undefined} raw
+ * @param {number} fallback
+ * @returns {number}
+ */
+const parseResetHour = (raw, fallback) => {
+    const hour = parseInt(raw, 10)
+    if (!Number.isFinite(hour)) return fallback
+    return Math.min(23, Math.max(0, hour))
+}
+
 const config = {
     dataSaveMode: process.env.DATA_SAVE_MODE || "none",
     apiKeys: apiKeys,
@@ -163,6 +177,14 @@ const config = {
     sessionReuseEnabled: process.env.SESSION_REUSE_ENABLED !== 'false',
     sessionReuseTtlSeconds: Math.max(60, parseInt(process.env.SESSION_REUSE_TTL_SECONDS, 10) || 1800),
     sessionReuseMaxEntries: Math.max(1, parseInt(process.env.SESSION_REUSE_MAX_ENTRIES, 10) || 200),
+    // 会话表落盘（data/session-reuse.json）：只在 DATA_SAVE_MODE=file 时生效——纯环境变量
+    // 模式本来就不写盘。关掉它就是"重启后每轮都是新窗口"，调试时可以这么做。
+    sessionReusePersist: process.env.SESSION_REUSE_PERSIST !== 'false',
+    // 日额度耗尽的账户什么时候回到轮换池：默认次日 09:00（用户口径"第二天 9 点后恢复"）。
+    // QUOTA_RESET_SAME_DAY=1 改成"下一个 09:00"（凌晨耗尽就不用白等一天）。
+    quotaResetHour: parseResetHour(process.env.QUOTA_RESET_HOUR, 9),
+    quotaResetTz: process.env.QUOTA_RESET_TZ || 'Asia/Shanghai',
+    quotaResetSameDay: process.env.QUOTA_RESET_SAME_DAY === '1',
     // Anthropic SSE `ping` cadence during upstream silence. Lower it if a client
     // or reverse proxy gives up sooner than this; the compensation retry can hold
     // the stream for tens of seconds with nothing else to send.

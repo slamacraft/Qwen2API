@@ -146,6 +146,9 @@
         @update:page="changePage"
         @update:page-size="changePageSize"
       />
+
+      <!-- 会话复用表：排查「为什么又新建了一个上游窗口」看这里 -->
+      <SessionReusePanel />
     </template>
 
     <AddAccountModal :open="showAddModal" @close="showAddModal = false" @saved="reloadAll" />
@@ -180,6 +183,7 @@ import AccountPagination from '../components/accounts/AccountPagination.vue'
 import AddAccountModal from '../components/accounts/AddAccountModal.vue'
 import EditProxyModal from '../components/accounts/EditProxyModal.vue'
 import AccountDetailModal from '../components/accounts/AccountDetailModal.vue'
+import SessionReusePanel from '../components/accounts/SessionReusePanel.vue'
 import { confirm, toast } from '../ui/feedback.js'
 import {
   DEFAULT_STATS,
@@ -769,12 +773,21 @@ const exportAccounts = async () => {
   }
 }
 
-// 冷却到期后补拉一次状态（每账号一次，避免轮询风暴）
+// 冷却/额度耗尽到期后补拉一次状态（每账号一次，避免轮询风暴）
 watch([nowTick, accountStats], () => {
   const stats = accountStats.value
   let shouldRefetch = false
   for (const email of Object.keys(stats)) {
     const status = stats[email]?.status
+    // 额度耗尽用 quotaResetAt（次日 09:00），到期后同样要补拉一次，
+    // 否则徽章会一直挂着"已达上限"，直到下一次 30 秒轮询才消失。
+    if (status?.kind === 'quota_exhausted' && typeof status?.quotaResetAt === 'number') {
+      if (nowTick.value >= status.quotaResetAt && cooldownRefetched.get(email) !== status.quotaResetAt) {
+        cooldownRefetched.set(email, status.quotaResetAt)
+        shouldRefetch = true
+      }
+      continue
+    }
     if (status?.kind !== 'cooldown' || typeof status?.cooldownEndsAt !== 'number') continue
     if (nowTick.value >= status.cooldownEndsAt && cooldownRefetched.get(email) !== status.cooldownEndsAt) {
       cooldownRefetched.set(email, status.cooldownEndsAt)

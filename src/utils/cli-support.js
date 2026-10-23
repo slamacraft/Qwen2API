@@ -33,9 +33,10 @@ function getAccountCliState(account, rotatorRecord = {}, now = Date.now()) {
   // por cuota agotada (account-rotator#recordQuotaExhausted). Gana el que libere mas tarde
   // —es el que de verdad manda cuando la cuenta vuelve al sorteo—. Sin fundirlos, una
   // cuenta desterrada por cuota se pintaba `active` mientras la rotacion la ignoraba.
+  const quotaCooldownEndsAt = Number(rotatorRecord.quotaCooldownEndsAt) || 0
   const cooldownEndsAt = Math.max(
     Number(rotatorRecord.cooldownEndsAt) || 0,
-    Number(rotatorRecord.quotaCooldownEndsAt) || 0
+    quotaCooldownEndsAt
   ) || null
   const lastErrorAt = rotatorRecord.lastErrorAt || null
   const lastErrorCode = rotatorRecord.lastErrorCode || null
@@ -43,7 +44,11 @@ function getAccountCliState(account, rotatorRecord = {}, now = Date.now()) {
   const cli = getCliAvailability(account)
 
   let kind = 'active'
-  if (cooldownEndsAt && now < cooldownEndsAt) {
+  // 额度耗尽优先于普通冷却：它不是"等几分钟"，而是"今天这个账号别再用了"。
+  // 面板文案与 tooltip 完全不同（绝对恢复时间 vs 倒计时），所以必须是独立 kind。
+  if (quotaCooldownEndsAt && now < quotaCooldownEndsAt) {
+    kind = 'quota_exhausted'
+  } else if (cooldownEndsAt && now < cooldownEndsAt) {
     kind = 'cooldown'
   } else if (lastErrorAt && (now - lastErrorAt) < WARN_WINDOW_MS) {
     kind = 'warn'
@@ -59,6 +64,8 @@ function getAccountCliState(account, rotatorRecord = {}, now = Date.now()) {
       kind,
       cli,
       cooldownEndsAt,
+      // 额度耗尽的具体恢复时刻（前端 tooltip 用它显示"明天 09:00 恢复"）
+      quotaResetAt: quotaCooldownEndsAt || null,
       lastErrorAt,
       lastErrorCode,
       cliUnavailableReason

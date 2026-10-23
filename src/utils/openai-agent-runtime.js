@@ -345,6 +345,14 @@ const collectOpenAIAgentAttempt = async (upstreamResponse, options = {}) => {
     if (created) {
       lastCreated = created
       if (created.responseId) createdByResponseId.set(created.responseId, created)
+      // 会话复用：把这条 user 消息的 id（parent_id）和本轮 assistant 的 id（response_id）
+      // 交给控制器。有工具的回合走的是**这个**运行时，chat.js 自己的流式循环不跑，
+      // 所以不在这里写，remember() 永远拿不到 id，lastParentId 恒为 null —— 下一轮
+      // 只能从根分叉，上游看到的就只剩一个工具结果（2026-10-23 的 <agent_blocked>）。
+      if (options.upstream_context) {
+        if (created.parentId) options.upstream_context.userMessageId = created.parentId
+        if (created.responseId) options.upstream_context.assistantMessageId = created.responseId
+      }
       const responseIndex = created.responseIndex === null || created.responseIndex === ''
         ? Number.NaN
         : Number(created.responseIndex)
@@ -887,6 +895,9 @@ const runOpenAIAgentTurn = async (initialResponse, options = {}) => {
       if (evaluation.suppressVisibleText) {
         logger.warn('OpenAI Agent 原生接纳的回合正文带文本工具错误/协议残渣，content 置空只交付 tool_calls', 'AGENT')
       }
+      // 这一轮被门禁**接受**了：上游那条 assistant 消息是完整的，下一轮可以拿它当
+      // parent 续用。被拒的尝试不置位——否则会把半截回复记成"可续用"。
+      if (options.upstream_context) options.upstream_context.finished = true
       return {
         ok: true,
         currentAccount,

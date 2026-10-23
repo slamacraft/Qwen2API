@@ -126,6 +126,7 @@ const { t } = useI18n()
 const statusOptions = computed(() => [
   { value: 'all', label: t('accounts.statusAll') },
   { value: 'active', label: t('accounts.statusActive') },
+  { value: 'quota_exhausted', label: t('accounts.statusQuotaExhausted') },
   { value: 'cooldown', label: t('accounts.statusCooldown') },
   { value: 'warn', label: t('accounts.statusWarn') },
   { value: 'expiring', label: t('accounts.statusExpiring') },
