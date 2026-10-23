@@ -174,6 +174,20 @@ sudo systemctl start qwen2api
 
 注意：`data/` 和 `.env` 不在 git 里，`pull` 不会覆盖，放心更新。
 
+#### 用脚本管理服务（不装 systemd 时）
+
+仓库自带一个控制脚本，只依赖 `bash` + `bun`，PID 和日志都放在 `logs/` 下：
+
+```bash
+./scripts/qwen2api.sh start      # 后台启动（写 logs/qwen2api.pid，日志 logs/qwen2api.out）
+./scripts/qwen2api.sh status     # 状态 + 健康检查
+./scripts/qwen2api.sh restart    # 重启
+./scripts/qwen2api.sh stop       # 停止（先 TERM，15 秒不退再 KILL）
+./scripts/qwen2api.sh logs       # 跟踪日志（默认最近 100 行）
+```
+
+它顺手挡掉几个常见错误：重复启动（同一份数据不能起两个实例）、没有 `.env`（自动从模板复制并提示要改什么）、`.env` 里没有 `API_KEY`、前端没构建、以及检测到 systemd 服务已在运行时拒绝再起一份。
+
 #### 停止 / 重启 / 看日志
 
 ```bash

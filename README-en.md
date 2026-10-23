@@ -174,6 +174,20 @@ sudo systemctl start qwen2api
 
 Note: `data/` and `.env` are not in git, so `pull` never overwrites them — updating is safe.
 
+#### Managing the service with the helper script (no systemd)
+
+The repository ships a control script that only needs `bash` and `bun`; the PID file and logs live under `logs/`:
+
+```bash
+./scripts/qwen2api.sh start      # start in the background (PID in logs/qwen2api.pid, log in logs/qwen2api.out)
+./scripts/qwen2api.sh status     # status + health check
+./scripts/qwen2api.sh restart    # restart
+./scripts/qwen2api.sh stop       # stop (TERM first, KILL after 15s)
+./scripts/qwen2api.sh logs       # follow the log (last 100 lines by default)
+```
+
+It also blocks the usual mistakes: a second instance (in-process state must stay single), a missing `.env` (one is created from the template and you are told what to fill in), a `.env` without `API_KEY`, a frontend that was never built, and a systemd unit that is already running.
+
 #### Stop / restart / logs
 
 ```bash
