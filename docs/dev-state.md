@@ -67,6 +67,12 @@
     - `bun run start` 后管理面板加账号报「保存失败」：根因是 `DATA_SAVE_MODE` 默认 `none`（纯环境变量模式），`saveAccount` 直接返回 false。现在启动时（`none` 且无 `ACCOUNTS`）打明确告警；`/setAccount`、`/setAccounts`、`/deleteAccount`、`/updateAccountProxy` 在 `none` 模式下直接 400 并写明「改 DATA_SAVE_MODE=file 或用 ACCOUNTS 环境变量」；`/setAccountDisabled` 不拦（本来就是只改内存）。测试：`tests/accounts-env-mode.test.js`（5 个用例）。
     - README 部署章节从「一键 deploy.sh」改成 **7 步分步指南**（装 Bun → 取代码 → 装依赖+构建 → 写 .env（表格列出必改项）→ 装 Chromium → 启动并验证 → systemd），另加「更新 / 停止重启日志 / 数据备份 / 常见问题」，三语同步。
 
+14. **服务器上「headless Chrome 提前退出（code 1）」（2026-10-23，详见 `todo.md` 第 10 项）**
+    - 现象：Linux 服务器自动生成会话失败，日志只有退出码，没有原因。
+    - 根因：`launchHeadless` 用 `stdio: 'ignore'` 起 Chrome，Chrome 自己的 stderr（缺 .so / root 沙箱 / snap 包装器）被丢掉。
+    - 修复：捕获 stderr 并拼进错误；root 或 `CHROME_NO_SANDBOX=1` 时自动加 `--no-sandbox --disable-setuid-sandbox`；恒定加 `--disable-dev-shm-usage`；spawn 失败单独报错；错误里附三条排查建议。README 三语 FAQ 各加一行。
+    - 验证：`CHROME_PATH=node.exe` 模拟失败 → 错误里带出真实 stderr；真实 Chrome 采集仍 3 秒完成。
+
 ## 三、进行中（下一步接手）
 
 **B. CLI 通道（服务器部署的正解，未通）**

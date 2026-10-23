@@ -142,6 +142,32 @@ const portOpen = async () => {
     }
 }
 
+/**
+ * 从 Chrome 的 stderr 里挑一句能看懂的失败原因。
+ * Chrome 起不来时（缺 .so、root 下没关沙箱、snap 包装器）真实原因只在这里，
+ * 以前 stdio: 'ignore' 把它丢了，用户只看到「提前退出（code 1）」。
+ */
+const summarizeChromeError = (stderr) => {
+    const lines = String(stderr || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+    if (lines.length === 0) return '（Chrome 没有输出任何错误信息）'
+    const interesting = lines.find((line) => /error|failed|cannot|denied|not found|no such|missing/i.test(line))
+    const picked = interesting || lines[lines.length - 1]
+    return picked.length > 300 ? `${picked.slice(0, 300)}…` : picked
+}
+
+/** root 下 Chrome 会拒绝启动（沙箱需要非特权用户），容器/CI 里通常也要关沙箱。 */
+const needsNoSandbox = () => {
+    if (process.env.CHROME_NO_SANDBOX === '1') return true
+    try {
+        return typeof process.getuid === 'function' && process.getuid() === 0
+    } catch {
+        return false
+    }
+}
+
 /** 起一个临时 profile 的无头 Chrome；返回进程句柄（调用方负责 kill）。 */
 const launchHeadless = async () => {
     const { spawn } = await import('node:child_process')
@@ -150,19 +176,45 @@ const launchHeadless = async () => {
     const exe = defaultChrome()
     if (!exe) throw new Error('找不到 Chrome，可传 --chrome <路径> 或设置 CHROME_PATH')
     const userDataDir = await mkdtemp(path.join(os.tmpdir(), 'qwen2api-headless-'))
-    const child = spawn(exe, [
+
+    const args = [
         `--user-data-dir=${userDataDir}`,
         `--remote-debugging-port=${DEBUG_PORT}`,
         '--headless=new',
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-gpu',
-        'about:blank'
-    ], { stdio: 'ignore', windowsHide: true })
+        // 容器 / 小内存 VPS 的 /dev/shm 往往只有 64MB，不加这个 Chrome 会直接崩
+        '--disable-dev-shm-usage'
+    ]
+    if (needsNoSandbox()) args.push('--no-sandbox', '--disable-setuid-sandbox')
+    args.push('about:blank')
+
+    const child = spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+
+    // 保留最后 4KB stderr：Chrome 起不来时唯一有用的线索
+    let stderrTail = ''
+    let spawnError = null
+    child.stderr?.on('data', (chunk) => {
+        stderrTail = `${stderrTail}${String(chunk)}`.slice(-4096)
+    })
+    child.stdout?.on('data', () => { /* 丢弃，避免管道写满 */ })
+    child.on('error', (error) => { spawnError = error })
+
     for (let i = 0; i < 60; i++) {
         await new Promise((resolve) => setTimeout(resolve, 500))
         if (await portOpen()) return child
-        if (child.exitCode !== null) throw new Error(`headless Chrome 提前退出（code ${child.exitCode}）`)
+        if (spawnError) {
+            throw new Error(`启动 Chrome 失败（${spawnError.code || spawnError.message}）：${exe}`)
+        }
+        if (child.exitCode !== null) {
+            throw new Error(
+                `headless Chrome 提前退出（code ${child.exitCode}，${exe}）：${summarizeChromeError(stderrTail)}。`
+                + '常见原因：root 下需要 --no-sandbox（脚本会自动加，也可设 CHROME_NO_SANDBOX=1）、'
+                + '缺共享库（apt install -y libnss3 libatk-bridge2.0-0 libgbm1 libasound2）、'
+                + '或 chromium 是 snap 包装器（改指 /usr/bin/chromium 或 CHROME_PATH）'
+            )
+        }
     }
     child.kill()
     throw new Error('headless Chrome 30 秒内没有起来')

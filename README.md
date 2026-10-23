@@ -215,6 +215,7 @@ sudo journalctl -u qwen2api --since '10 min ago' # 最近 10 分钟
 | 加账号提示「保存失败」，日志有 `环境变量模式不支持保存账户数据` | `DATA_SAVE_MODE` 还是 `none`。改成 `file` 重启（现在面板会直接提示这条） |
 | 启动即报 `请务必设置 API_KEY 环境变量` | 没有 `.env`，或不在项目根目录启动 |
 | 账号状态列一直「缺会话」/ 请求报 `unauthorized` | 服务器没装 Chromium，或该账号密码不对；点「可用性」列旁的「生成」看具体报错 |
+| 生成会话报 `headless Chrome 提前退出（code 1）` | 服务器上的 Chrome 起不来。错误信息里现在会带上 Chrome 自己的 stderr：缺依赖库就 `apt install -y libnss3 libatk-bridge2.0-0 libgbm1 libasound2`；root 运行需要 `--no-sandbox`（脚本已自动加，也可设 `CHROME_NO_SANDBOX=1`）；`chromium-browser` 是 snap 包装器时改指 `/usr/bin/chromium` 或设 `CHROME_PATH` |
 | 端口被占用 | 改 `.env` 的 `SERVICE_PORT`，或 `ss -lntp \| grep 3000` 找占用进程 |
 | 前端页面 404 / 空白 | 没跑 `bun run build:frontend`，`public/dist` 不存在 |
 

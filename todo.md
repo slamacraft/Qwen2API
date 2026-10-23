@@ -98,3 +98,16 @@
 - [x] 2) README 的部署章节从「一键脚本」改成「一步一步教」
   - 原因：脚本仍要求用户改 `.env`（API_KEY、DATA_SAVE_MODE、CHROME_PATH 等），一次性脚本反而掩盖了这些必改项。
   - 现在按 7 步走：装 Bun → 取代码 → 装依赖+构建前端 → **写 .env（表格列出必须改的两项）** → 装 Chromium → 启动并验证（health / models / 一条改完即用的冒烟命令）→ 配 systemd；另有「更新」「停止/重启/日志」「数据与备份」「常见问题」四节，三语同步。
+
+## 10. 服务器上「headless Chrome 提前退出（code 1）」
+
+- 现象：Linux 服务器自动生成会话失败，日志只有 `headless Chrome 提前退出（code 1）`，没有任何细节。
+- 根因：采集脚本 `launchHeadless` 用 `stdio: 'ignore'` 起 Chrome，把 Chrome 自己的 stderr（缺 .so、root 沙箱、snap 包装器）全丢了；只报退出码等于没报。
+- 修复（`scripts/harvest-browser-profile.mjs`）：
+  - 捕获 Chrome 的 stderr（保留最后 4KB），失败时把关键行拼进错误信息；
+  - root 运行（`process.getuid() === 0`）或 `CHROME_NO_SANDBOX=1` 时自动加 `--no-sandbox --disable-setuid-sandbox`；
+  - 恒定加 `--disable-dev-shm-usage`（小内存 VPS / 容器的 /dev/shm 只有 64MB 会直接崩）；
+  - spawn 失败（ENOENT 等）单独报「启动 Chrome 失败（code）」；
+  - 错误里直接给出三条排查建议（装库 / 关沙箱 / snap 包装器改 CHROME_PATH）。
+- 验证：用 `CHROME_PATH=node.exe` 模拟起不来，错误里带出真实 stderr（`bad option: --disable-dev-shm-usage`）；真实 Chrome 采集仍然 3 秒完成、21 条 cookie、token 900s。
+- README 三语 FAQ 各加一行（现象 + 三条处理办法）。

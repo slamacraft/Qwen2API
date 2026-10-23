@@ -215,6 +215,7 @@ To change the port, set `SERVICE_PORT` in `.env`; before deploying multiple repl
 | Adding an account reports "save failed", and the log contains `环境变量模式不支持保存账户数据` | `DATA_SAVE_MODE` is still `none`. Change it to `file` and restart (the panel now shows this hint directly) |
 | Startup fails with `请务必设置 API_KEY 环境变量` | There is no `.env`, or you are not starting from the project root |
 | The account status column keeps showing "No session" / requests return `unauthorized` | Chromium is not installed on the server, or that account's password is wrong; click "Generate" next to the Usability column to see the actual error |
+| Generating a session fails with `headless Chrome exited early (code 1)` | Chrome cannot start on the server. The message now includes Chrome's own stderr: install the missing libraries (`apt install -y libnss3 libatk-bridge2.0-0 libgbm1 libasound2`); running as root needs `--no-sandbox` (added automatically, or set `CHROME_NO_SANDBOX=1`); if `chromium-browser` is a snap wrapper, point at `/usr/bin/chromium` or set `CHROME_PATH` |
 | Port already in use | Change `SERVICE_PORT` in `.env`, or find the process with `ss -lntp \| grep 3000` |
 | The frontend page returns 404 / is blank | `bun run build:frontend` was not run, so `public/dist` does not exist |
 
